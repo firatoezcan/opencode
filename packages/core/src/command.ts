@@ -197,7 +197,7 @@ const evaluateShell = Effect.fnUntraced(function* (
 ) {
   const matches = Array.from(text.matchAll(shellRegex))
   if (matches.length === 0) return text
-  const shell = yield* services.shell.resolve({ preference: "compatible" })
+  const shell = yield* services.shell.resolve({ preference: "configured" })
   const outputs = yield* Effect.forEach(
     matches,
     (match) => {
