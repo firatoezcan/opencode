@@ -3,7 +3,6 @@ import { createSimpleContext } from "./helper"
 import { useClient } from "./client"
 import { useData } from "./data"
 import { useStorage } from "./storage"
-import { reconcilePaneLayout, removePaneLayoutItem, type PaneLayoutNode } from "./pane-layout-model"
 import { useEvent } from "./event"
 import { createSignal, onCleanup } from "solid-js"
 
@@ -11,7 +10,8 @@ type PaneWorkspace = {
   sessionID?: string
   groupID: string
   items: GroupItem[]
-  layout: PaneLayoutNode
+  terminals: PersistentPtyInfo[]
+  selectedTerminalID?: string
 }
 
 type PaneLayoutState = {
@@ -25,54 +25,47 @@ export const { use: usePaneLayout, provider: PaneLayoutProvider } = createSimple
     const data = useData()
     const event = useEvent()
     const [focus, setFocus] = createSignal<string>()
-    const [store, update] = useStorage().store<PaneLayoutState>("pane-layout-v1", {
+    const [store, update] = useStorage().store<PaneLayoutState>("pane-workspace-v1", {
       initial: { workspaces: {} },
     })
 
-    const save = (key: string, group: GroupInfo, sessionID?: string) =>
-      update((draft) => {
-        const layout = reconcilePaneLayout(draft.workspaces[key]?.layout, group.items)
-        if (!layout) {
+    const save = async (key: string, group: GroupInfo, sessionID?: string, selectedTerminalID?: string) => {
+      const terminals = await client.api["server.persistentPty"].list({ groupID: group.id })
+      await update((draft) => {
+        if (group.items.length === 0) {
           delete draft.workspaces[key]
           return
         }
+        const current = draft.workspaces[key]?.selectedTerminalID
+        const selected = selectedTerminalID ?? current
         draft.workspaces[key] = {
           sessionID,
           groupID: group.id,
           items: group.items,
-          layout,
+          terminals,
+          selectedTerminalID: terminals.some((terminal) => terminal.id === selected) ? selected : terminals.at(-1)?.id,
         }
       })
+    }
+
+    const syncGroup = (groupID: string) => {
+      const workspaces = Object.entries(store.workspaces).filter((entry) => entry[1].groupID === groupID)
+      if (workspaces.length === 0) return
+      void client.api["server.persistentPty"].group
+        .get({ groupID })
+        .then((group) => Promise.all(workspaces.map(([key, workspace]) => save(key, group, workspace.sessionID))))
+        .catch((error) => console.error("Failed to sync terminal workspace", error))
+    }
 
     onCleanup(
       event.on("group.item.added", (evt) => {
-        void update((draft) => {
-          Object.values(draft.workspaces).forEach((workspace) => {
-            if (workspace.groupID !== evt.data.groupID) return
-            if (workspace.items.some((item) => item.type === evt.data.item.type && item.id === evt.data.item.id)) return
-            workspace.items.push(evt.data.item)
-            workspace.layout = reconcilePaneLayout(workspace.layout, workspace.items) ?? workspace.layout
-          })
-        }).catch((error) => console.error("Failed to add pane layout item", error))
+        syncGroup(evt.data.groupID)
       }),
     )
 
     onCleanup(
       event.on("group.item.removed", (evt) => {
-        void update((draft) => {
-          Object.entries(draft.workspaces).forEach(([sessionID, workspace]) => {
-            if (workspace.groupID !== evt.data.groupID) return
-            const layout = removePaneLayoutItem(workspace.layout, evt.data.item)
-            if (!layout) {
-              delete draft.workspaces[sessionID]
-              return
-            }
-            workspace.items = workspace.items.filter(
-              (item) => item.type !== evt.data.item.type || item.id !== evt.data.item.id,
-            )
-            workspace.layout = layout
-          })
-        }).catch((error) => console.error("Failed to remove pane layout item", error))
+        syncGroup(evt.data.groupID)
       }),
     )
 
@@ -99,11 +92,19 @@ export const { use: usePaneLayout, provider: PaneLayoutProvider } = createSimple
       async loadGroup(groupID: string) {
         await save(groupID, await client.api["server.persistentPty"].group.get({ groupID }))
       },
-      async refresh(sessionID: string) {
-        const current = store.workspaces[sessionID]
+      async refresh(key: string) {
+        const current = store.workspaces[key]
         if (!current) return
         const group = await client.api["server.persistentPty"].group.get({ groupID: current.groupID })
-        await save(sessionID, group, sessionID)
+        await save(key, group, current.sessionID)
+      },
+      selectTerminal(key: string, ptyID: string) {
+        setFocus(ptyID)
+        return update((draft) => {
+          const workspace = draft.workspaces[key]
+          if (!workspace?.terminals.some((terminal) => terminal.id === ptyID)) return
+          workspace.selectedTerminalID = ptyID
+        })
       },
       async newTerminal(sessionID: string, options?: { focus?: boolean }): Promise<PersistentPtyInfo> {
         const api = client.api["server.persistentPty"]
@@ -125,7 +126,21 @@ export const { use: usePaneLayout, provider: PaneLayoutProvider } = createSimple
         })
         const next = await api.group.get({ groupID: group.id })
         if (options?.focus !== false) setFocus(terminal.id)
-        await save(sessionID, next, sessionID)
+        await save(sessionID, next, sessionID, terminal.id)
+        return terminal
+      },
+      async newTerminalInGroup(groupID: string, cwd: string): Promise<PersistentPtyInfo> {
+        const api = client.api["server.persistentPty"]
+        const terminal = await api.create({
+          groupID,
+          command: process.env.SHELL || "/bin/sh",
+          args: [],
+          cwd,
+          title: "Terminal",
+          env: {},
+        })
+        setFocus(terminal.id)
+        await save(groupID, await api.group.get({ groupID }), undefined, terminal.id)
         return terminal
       },
       async newTerminalWorkspace(location: LocationRef) {
@@ -144,7 +159,7 @@ export const { use: usePaneLayout, provider: PaneLayoutProvider } = createSimple
             await api.group.remove({ groupID: group.id }).catch(() => undefined)
             throw error
           })
-        await save(group.id, await api.group.get({ groupID: group.id }))
+        await save(group.id, await api.group.get({ groupID: group.id }), undefined, terminal.id)
         return { group, terminal }
       },
       shouldFocus(ptyID: string) {
