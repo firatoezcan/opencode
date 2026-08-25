@@ -4,6 +4,7 @@ import { Effect, Layer, Record, Result, Schema, Context } from "effect"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { Global } from "@opencode-ai/core/global"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Flag } from "@opencode-ai/core/flag/flag"
 
 export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
 
@@ -55,7 +56,7 @@ const layer = Layer.effect(
     const fsys = yield* FSUtil.Service
     const decode = Schema.decodeUnknownOption(Info)
 
-    const all = Effect.fn("Auth.all")(function* () {
+    const read = Effect.fn("Auth.read")(function* () {
       if (process.env.OPENCODE_AUTH_CONTENT) {
         try {
           return JSON.parse(process.env.OPENCODE_AUTH_CONTENT)
@@ -64,6 +65,18 @@ const layer = Layer.effect(
 
       const data = (yield* fsys.readJson(file).pipe(Effect.orElseSucceed(() => ({})))) as Record<string, unknown>
       return Record.filterMap(data, (value) => Result.fromOption(decode(value), () => undefined))
+    })
+
+    let memory: Record<string, Info> | undefined
+    if (Flag.OPENCODE_SERVER_PASSWORD) {
+      memory = yield* read()
+      delete process.env.OPENCODE_AUTH_CONTENT
+      delete process.env.OPENCODE_SERVER_PASSWORD
+      yield* fsys.remove(file, { force: true }).pipe(Effect.mapError(fail("Failed to remove auth data")), Effect.orDie)
+    }
+
+    const all = Effect.fn("Auth.all")(function* () {
+      return memory ? { ...memory } : yield* read()
     })
 
     const get = Effect.fn("Auth.get")(function* (providerID: string) {
@@ -75,6 +88,10 @@ const layer = Layer.effect(
       const data = yield* all()
       if (norm !== key) delete data[key]
       delete data[norm + "/"]
+      if (memory) {
+        memory = { ...data, [norm]: info }
+        return
+      }
       yield* fsys
         .writeJson(file, { ...data, [norm]: info }, 0o600)
         .pipe(Effect.mapError(fail("Failed to write auth data")))
@@ -85,6 +102,10 @@ const layer = Layer.effect(
       const data = yield* all()
       delete data[key]
       delete data[norm]
+      if (memory) {
+        memory = data
+        return
+      }
       yield* fsys.writeJson(file, data, 0o600).pipe(Effect.mapError(fail("Failed to write auth data")))
     })
 
