@@ -67,6 +67,43 @@ describe("Snapshot", () => {
     ),
   )
 
+  testEffect(Layer.empty).live("reads review changes against the default branch", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          const project = path.join(tmp.path, "project")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(project)
+            await fs.writeFile(path.join(project, "tracked.txt"), "one\n")
+            await $`git init`.cwd(project).quiet()
+            await $`git config core.fsmonitor false`.cwd(project).quiet()
+            await $`git config commit.gpgsign false`.cwd(project).quiet()
+            await $`git config user.email test@opencode.test`.cwd(project).quiet()
+            await $`git config user.name Test`.cwd(project).quiet()
+            await $`git add .`.cwd(project).quiet()
+            await $`git commit -m initial`.cwd(project).quiet()
+            await $`git branch -M main`.cwd(project).quiet()
+            await $`git update-ref refs/remotes/origin/main HEAD`.cwd(project).quiet()
+            await $`git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main`.cwd(project).quiet()
+            await $`git switch -c feature`.cwd(project).quiet()
+            await fs.writeFile(path.join(project, "tracked.txt"), "two\n")
+            await fs.writeFile(path.join(project, "added.txt"), "added\n")
+          })
+
+          const diffs = yield* Effect.gen(function* () {
+            return yield* (yield* Snapshot.Service).review()
+          }).pipe(Effect.provide(snapshotLayer(tmp.path, project)))
+
+          expect(diffs.map((item) => [item.path, item.status])).toEqual([
+            [RelativePath.make("added.txt"), "added"],
+            [RelativePath.make("tracked.txt"), "modified"],
+          ])
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   testEffect(Layer.empty).live("treats capture outside Git as unavailable", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),

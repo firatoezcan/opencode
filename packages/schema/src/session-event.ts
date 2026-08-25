@@ -73,6 +73,16 @@ export const ModelSwitched = Event.define({
 })
 export type ModelSwitched = typeof ModelSwitched.Type
 
+export const TitleUpdated = Event.define({
+  type: "session.next.title.updated",
+  ...options,
+  schema: {
+    ...Base,
+    title: Schema.String,
+  },
+})
+export type TitleUpdated = typeof TitleUpdated.Type
+
 export const Moved = Event.define({
   type: "session.next.moved",
   ...options,
@@ -448,6 +458,7 @@ export namespace RevertEvent {
 export const DurableDefinitions = Event.inventory(
   AgentSwitched,
   ModelSwitched,
+  TitleUpdated,
   Moved,
   Prompted,
   PromptAdmitted,
@@ -479,6 +490,7 @@ export const DurableDefinitions = Event.inventory(
 export const Definitions = Event.inventory(
   AgentSwitched,
   ModelSwitched,
+  TitleUpdated,
   Moved,
   Prompted,
   PromptAdmitted,

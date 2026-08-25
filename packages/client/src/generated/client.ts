@@ -2,6 +2,8 @@ import type {
   HealthGetOutput,
   LocationGetInput,
   LocationGetOutput,
+  LocationReloadInput,
+  LocationReloadOutput,
   AgentsListInput,
   AgentsListOutput,
   SessionsListInput,
@@ -11,6 +13,8 @@ import type {
   SessionsActiveOutput,
   SessionsGetInput,
   SessionsGetOutput,
+  SessionsSetTitleInput,
+  SessionsSetTitleOutput,
   SessionsSwitchAgentInput,
   SessionsSwitchAgentOutput,
   SessionsSwitchModelInput,
@@ -83,6 +87,8 @@ import type {
   FilesListOutput,
   FilesFindInput,
   FilesFindOutput,
+  ReviewsDiffInput,
+  ReviewsDiffOutput,
   CommandsListInput,
   CommandsListOutput,
   SkillsListInput,
@@ -269,6 +275,18 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ),
+      reload: (input?: LocationReloadInput, requestOptions?: RequestOptions) =>
+        request<LocationReloadOutput>(
+          {
+            method: "POST",
+            path: `/api/location/reload`,
+            query: { location: input?.["location"] },
+            successStatus: 204,
+            declaredStatuses: [401, 400],
+            empty: true,
+          },
+          requestOptions,
+        ),
     },
     agents: {
       list: (input?: AgentsListInput, requestOptions?: RequestOptions) =>
@@ -345,6 +363,18 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ).then((value) => value.data),
+      setTitle: (input: SessionsSetTitleInput, requestOptions?: RequestOptions) =>
+        request<SessionsSetTitleOutput>(
+          {
+            method: "PATCH",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/title`,
+            body: { title: input["title"] },
+            successStatus: 204,
+            declaredStatuses: [404, 400, 401],
+            empty: true,
+          },
+          requestOptions,
+        ),
       switchAgent: (input: SessionsSwitchAgentInput, requestOptions?: RequestOptions) =>
         request<SessionsSwitchAgentOutput>(
           {
@@ -788,6 +818,20 @@ export function make(options: ClientOptions) {
             query: { location: input["location"], query: input["query"], type: input["type"], limit: input["limit"] },
             successStatus: 200,
             declaredStatuses: [401, 400],
+            empty: false,
+          },
+          requestOptions,
+        ),
+    },
+    reviews: {
+      diff: (input?: ReviewsDiffInput, requestOptions?: RequestOptions) =>
+        request<ReviewsDiffOutput>(
+          {
+            method: "GET",
+            path: `/api/review/diff`,
+            query: { location: input?.["location"], context: input?.["context"] },
+            successStatus: 200,
+            declaredStatuses: [500, 401, 400],
             empty: false,
           },
           requestOptions,

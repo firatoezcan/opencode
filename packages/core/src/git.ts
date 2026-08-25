@@ -83,6 +83,7 @@ export interface Interface {
     readonly head: (repository: Repository) => Effect.Effect<string | undefined>
     readonly branch: (repository: Repository) => Effect.Effect<string | undefined>
     readonly defaultRemoteBranch: (repository: Repository, remote?: string) => Effect.Effect<string | undefined>
+    readonly mergeBase: (repository: Repository, revision: string) => Effect.Effect<string | undefined>
     readonly rootCommits: (repository: Repository) => Effect.Effect<readonly string[]>
   }
   readonly sync: {
@@ -237,6 +238,12 @@ const layer = Layer.effect(
       const result = yield* run(repository.worktree, proc)(["symbolic-ref", `refs/remotes/${remoteName}/HEAD`])
       if (result.exitCode !== 0) return undefined
       return result.text.trim().replace(new RegExp(`^refs/remotes/${remoteName}/`), "") || undefined
+    })
+
+    const mergeBase = Effect.fn("Git.history.mergeBase")(function* (repository: Repository, revision: string) {
+      const result = yield* run(repository.worktree, proc)(["merge-base", "HEAD", revision])
+      if (result.exitCode !== 0) return undefined
+      return result.text.trim() || undefined
     })
 
     const operation = Effect.fnUntraced(function* (
@@ -925,7 +932,7 @@ const layer = Layer.effect(
     return Service.of({
       repo: { discover, clone, create },
       remote: { get: remote },
-      history: { head, branch, defaultRemoteBranch: remoteHead, rootCommits: roots },
+      history: { head, branch, defaultRemoteBranch: remoteHead, mergeBase, rootCommits: roots },
       sync: { fetchRemotes: fetch, fetchBranch, checkoutRemoteBranch: checkout, resetHard: reset },
       change: { capture, apply, discard },
       worktree: { create: worktreeCreate, remove: worktreeRemove, list: worktreeList },
