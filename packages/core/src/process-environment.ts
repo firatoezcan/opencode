@@ -2,6 +2,8 @@ export * as ProcessEnvironment from "./process-environment"
 
 import { dlopen } from "bun:ffi"
 
+declare const OPENCODE_LIBC: "glibc" | "musl" | undefined
+
 const privateKeys = ["OPENCODE_AUTH_CONTENT", "OPENCODE_SERVER_PASSWORD"] as const
 const PR_SET_DUMPABLE = 4
 const protectedBootEnvironment = privateKeys.some((key) => process.env[key] !== undefined)
@@ -14,7 +16,16 @@ function protect() {
     protectedProcess = true
     return
   }
-  const libc = dlopen("libc.so.6", {
+  const libcPath =
+    typeof OPENCODE_LIBC === "undefined" || OPENCODE_LIBC === "glibc"
+      ? "libc.so.6"
+      : process.arch === "arm64"
+        ? "/lib/libc.musl-aarch64.so.1"
+        : process.arch === "x64"
+          ? "/lib/libc.musl-x86_64.so.1"
+          : undefined
+  if (!libcPath) throw new Error("The model process credential boundary is unavailable")
+  const libc = dlopen(libcPath, {
     prctl: { args: ["i32", "u64", "u64", "u64", "u64"], returns: "i32" },
     unsetenv: { args: ["cstring"], returns: "i32" },
   })
