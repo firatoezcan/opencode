@@ -62,8 +62,7 @@ type MouseCloseHold = {
 type TabContextMenuState = {
   x: number
   y: number
-  sessionID?: string
-  title?: string
+  tab?: SessionTab
 }
 
 type ContextController = ReturnType<typeof useSessionTabs>
@@ -248,16 +247,20 @@ function TabContextMenu(props: { state: TabContextMenuState; tabs: SessionTabsCo
   const theme = useTheme("elevated")
   const dialog = useDialog()
   const actions = createMemo(() => {
-    const sessionID = props.state.sessionID
+    const tab = props.state.tab
     return [
       ...(props.tabs.add ? [{ title: "New tab", run: () => props.tabs.add?.() }] : []),
-      ...(sessionID
+      ...(tab
         ? [
-            {
-              title: "Rename",
-              run: () => DialogSessionRename.show(dialog, sessionID, props.state.title),
-            },
-            { title: "Close", run: () => props.tabs.close(sessionID) },
+            ...(!tab.groupID
+              ? [
+                  {
+                    title: "Rename",
+                    run: () => DialogSessionRename.show(dialog, tab.sessionID, tab.title),
+                  },
+                ]
+              : []),
+            { title: "Close", run: () => props.tabs.close(tab.sessionID) },
           ]
         : []),
     ]
@@ -480,7 +483,7 @@ function VerticalSessionTabs(props: { controller?: SessionTabsController; animat
               const status = createMemo(() => itemStatus(tab))
               const [sweepLevel, setSweepLevel] = createSignal(0)
               const [closeHovered, setCloseHovered] = createSignal(false)
-              const session = createMemo(() => data.session.get(tab.sessionID))
+              const session = createMemo(() => (tab.groupID ? undefined : data.session.get(tab.sessionID)))
               const project = createMemo(() => {
                 const value = session()
                 return value ? data.project.get(value.projectID) : undefined
@@ -489,7 +492,7 @@ function VerticalSessionTabs(props: { controller?: SessionTabsController; animat
               const restingTitleWidth = () => Math.max(1, width() - numberWidth() - 2)
               const hoveredTitleWidth = () => Math.max(1, restingTitleWidth() - 1)
               const titleWidth = () => (hovered() === tab.sessionID ? hoveredTitleWidth() : restingTitleWidth())
-              const title = () => tab.title ?? "Untitled session"
+              const title = () => tab.title ?? (tab.groupID ? "Terminal" : "Untitled session")
               const scrolling = () => marquee.active() === tab.sessionID
               const visibleTitleParts = createMemo(() =>
                 scrolling()
@@ -508,6 +511,7 @@ function VerticalSessionTabs(props: { controller?: SessionTabsController; animat
               const detail = createMemo(() => {
                 const fixture = tabs.detail?.(tab.sessionID)
                 if (fixture !== undefined) return fixture
+                if (tab.groupID) return tab.directory ?? ""
                 const value = session()
                 const currentProject = project()
                 const projectLabel = projectName(currentProject, value?.location.directory) ?? ""
@@ -641,10 +645,9 @@ function VerticalSessionTabs(props: { controller?: SessionTabsController; animat
                       setDragging(undefined)
                       if (!rail) return
                       setContextMenu({
-                        x: event.x,
-                        y: event.y,
-                        sessionID: tab.sessionID,
-                        title: tab.title,
+                        x: event.x - rail.screenX,
+                        y: event.y - rail.screenY,
+                        tab,
                       })
                       event.preventDefault()
                       event.stopPropagation()
@@ -1179,7 +1182,7 @@ function HorizontalSessionTabs(props: { controller?: SessionTabsController; anim
           }
           const glowColor = () => feedbackColor() ?? accent()
           const glows = () => !selected() && (status().attention || (!status().busy && status().unread !== undefined))
-          const title = () => tab.title ?? "Untitled session"
+          const title = () => tab.title ?? (tab.groupID ? "Terminal" : "Untitled session")
           const tabNumber = createMemo(() => items().findIndex((item) => item.sessionID === tab.sessionID) + 1)
           const numberWidth = () => Math.max(2, String(items().length).length)
           // Hovering reveals the close mark, so the title's right bound shifts left of it.
@@ -1263,10 +1266,9 @@ function HorizontalSessionTabs(props: { controller?: SessionTabsController; anim
                   didDrag = false
                   setDragging(undefined)
                   setContextMenu({
-                    x: event.x,
-                    y: event.y,
-                    sessionID: tab === NEW_SESSION_TAB ? undefined : tab.sessionID,
-                    title: tab === NEW_SESSION_TAB ? undefined : tab.title,
+                    x: event.x - (strip?.screenX ?? 0),
+                    y: event.y - (strip?.screenY ?? 0),
+                    tab: tab === NEW_SESSION_TAB ? undefined : tab,
                   })
                   event.preventDefault()
                   event.stopPropagation()

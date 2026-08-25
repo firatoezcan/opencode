@@ -75,6 +75,7 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
     const fallback = empty()
     const [promptPulses, setPromptPulses] = createSignal<Record<string, number>>({})
     let history: SessionTabHistory = { entries: [], index: -1 }
+    const closing = new Set<string>()
     // User-closed tabs eligible for reopening; in-memory like history, deleted sessions pruned.
     let closedTabs: ClosedSessionTab[] = []
     // Storage mutations apply against the on-disk draft under a file lock, so
@@ -125,12 +126,17 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
     }
     const normalize = (value: TabsState) => ({
       tabs: value.tabs.reduce<SessionTab[]>((tabs, tab) => {
+        if (tab.groupID) return openSessionTab(tabs, { ...tab, sessionID: tab.groupID })
         const sessionID = root(tab.sessionID)
         return openSessionTab(tabs, { sessionID, title: title(sessionID, tab.title) })
       }, []),
       unread: {},
     })
-    const current = () => (route.data.type === "session" ? root(route.data.sessionID) : undefined)
+    const current = () => {
+      if (route.data.type === "session") return root(route.data.sessionID)
+      if (route.data.type === "workspace") return route.data.groupID
+      return undefined
+    }
     const newTab = createMemo((open = false) => {
       if (route.data.type === "home") return true
       if (!open) return false
@@ -138,6 +144,9 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       return sessionID !== undefined && !state().tabs.some((tab) => tab.sessionID === sessionID)
     }, false)
     const status = (sessionID: string) => {
+      if (state().tabs.some((tab) => tab.sessionID === sessionID && tab.groupID)) {
+        return { unread: undefined, promptPulse: 0, attention: false, busy: false }
+      }
       const session = root(sessionID)
       const members = family(session)
       return {
@@ -160,11 +169,20 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
     createEffect(
       on(
         [
-          () => (enabled() && route.data.type === "session" ? route.data.sessionID : undefined),
+          () => {
+            if (!enabled()) return undefined
+            if (route.data.type === "session") return route.data.sessionID
+            if (route.data.type === "workspace") return route.data.groupID
+            return undefined
+          },
           () => config.tabs.scope,
         ],
         ([routed]) => {
           if (!routed || routed === "dummy") return
+          if (route.data.type === "workspace") {
+            history = recordSessionTabHistory(history, route.data.groupID)
+            return
+          }
           const sessionID = root(routed)
           cancelledTabs.delete(sessionID)
           history = recordSessionTabHistory(history, sessionID)
@@ -233,7 +251,8 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
     // the first connection slots and switches still render from a warm cache.
     const openTabSessions = createMemo(() =>
       state()
-        .tabs.map((tab) => tab.sessionID)
+        .tabs.filter((tab) => !tab.groupID)
+        .map((tab) => tab.sessionID)
         .sort()
         .join("\n"),
     )
@@ -261,7 +280,8 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       })()
       const timer = setTimeout(async () => {
         const sessions = state()
-          .tabs.map((tab) => tab.sessionID)
+          .tabs.filter((tab) => !tab.groupID)
+          .map((tab) => tab.sessionID)
           .filter((sessionID) => sessionID !== current())
         for (const sessionID of sessions) {
           if (stale) return
@@ -296,17 +316,49 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
     onCleanup(
       event.on("session.deleted", (evt) => {
         const target = root(evt.data.sessionID)
-        closedTabs = closedTabs.filter((entry) => entry.tab.sessionID !== target)
+        closedTabs = closedTabs.filter((entry) => entry.tab.groupID || entry.tab.sessionID !== target)
         remove(evt.data.sessionID, enabled())
       }),
     )
 
-    function remove(sessionID: string, navigate: boolean) {
-      const target = root(sessionID)
+    onCleanup(
+      event.on("group.item.removed", (evt) => {
+        if (closing.has(evt.data.groupID)) return
+        if (!state().tabs.some((tab) => tab.groupID === evt.data.groupID)) return
+        void client.api["server.persistentPty"].group
+          .get({ groupID: evt.data.groupID })
+          .then(async (group) => {
+            if (group.items.length > 0) return
+            await client.api["server.persistentPty"].group.remove({ groupID: group.id })
+            remove(group.id, enabled())
+          })
+          .catch(() => undefined)
+      }),
+    )
+
+    function tab(id: string) {
+      return state().tabs.find((item) => item.sessionID === id)
+    }
+
+    function navigate(id: string | undefined) {
+      if (!id) {
+        route.navigate({ type: "home" })
+        return
+      }
+      const target = tab(id)
+      if (target?.groupID) {
+        route.navigate({ type: "workspace", groupID: target.groupID })
+        return
+      }
+      route.navigate({ type: "session", sessionID: id })
+    }
+
+    function remove(sessionID: string, shouldNavigate: boolean) {
+      const target = tab(sessionID)?.groupID ? sessionID : root(sessionID)
       cancelledTabs.add(target)
       scrollAnchors.delete(target)
       const closed = closeSessionTab(state().tabs, target)
-      const selected = navigate && current() === target
+      const selected = shouldNavigate && current() === target
       if (closed.tabs === state().tabs && !selected) return
       const previous = selected
         ? moveSessionTabHistory(recordSessionTabHistory(history, target), closed.tabs, target, -1)
@@ -322,7 +374,25 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
         delete next[target]
         return next
       })
-      if (selected) route.navigate(next ? { type: "session", sessionID: next } : { type: "home" })
+      if (selected) navigate(next)
+    }
+
+    async function closeWorkspace(tab: SessionTab) {
+      if (!tab.groupID || closing.has(tab.groupID)) return
+      closing.add(tab.groupID)
+      try {
+        const api = client.api["server.persistentPty"]
+        const group = await api.group.get({ groupID: tab.groupID })
+        if (!group.items.some((item) => item.type === "session")) {
+          for (const terminal of await api.list({ groupID: group.id })) await api.remove({ ptyID: terminal.id })
+          await api.group.remove({ groupID: group.id })
+        }
+        remove(tab.sessionID, true)
+      } catch (error) {
+        console.error("Failed to close terminal workspace", error)
+      } finally {
+        closing.delete(tab.groupID)
+      }
     }
 
     return {
@@ -352,7 +422,24 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       },
       select(sessionID: string) {
         if (!enabled()) return
+        const target = tab(sessionID)
+        if (target?.groupID) {
+          route.navigate({ type: "workspace", groupID: target.groupID })
+          return
+        }
         route.navigate({ type: "session", sessionID: root(sessionID) })
+      },
+      openWorkspace(groupID: string, directory: string) {
+        if (!enabled()) return
+        update((draft) => {
+          draft.tabs = openSessionTab(draft.tabs, {
+            sessionID: groupID,
+            groupID,
+            directory,
+            title: "Terminal",
+          })
+        })
+        route.navigate({ type: "workspace", groupID })
       },
       add() {
         if (!enabled()) return
@@ -370,17 +457,21 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       },
       close(sessionID?: string) {
         if (!enabled()) return
-        const target = sessionID ? root(sessionID) : current()
+        const target = sessionID ? (tab(sessionID)?.groupID ? sessionID : root(sessionID)) : current()
         if (!target) {
           const previous = moveSessionTabHistory(history, state().tabs, undefined, -1)
           history = previous.history
           const session = previous.sessionID ?? state().tabs.at(-1)?.sessionID
-          if (route.data.type === "home" && session) route.navigate({ type: "session", sessionID: session })
+          if (route.data.type === "home" && session) navigate(session)
           return
         }
         const index = state().tabs.findIndex((tab) => tab.sessionID === target)
-        const tab = state().tabs[index]
-        if (tab) closedTabs = recordClosedSessionTab(closedTabs, tab, index)
+        const selected = state().tabs[index]
+        if (selected?.groupID) {
+          void closeWorkspace(selected)
+          return
+        }
+        if (selected) closedTabs = recordClosedSessionTab(closedTabs, selected, index)
         remove(target, true)
       },
       reopen() {
@@ -397,7 +488,7 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       },
       move(sessionID: string, index: number) {
         if (!enabled()) return
-        const session = root(sessionID)
+        const session = tab(sessionID)?.groupID ? sessionID : root(sessionID)
         if (moveSessionTab(state().tabs, session, index) === state().tabs) return
         update((draft) => {
           draft.tabs = moveSessionTab(draft.tabs, session, index)
@@ -406,19 +497,19 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       cycle(direction: 1 | -1) {
         if (!enabled()) return
         const tab = cycleSessionTab(state().tabs, current(), direction)
-        if (tab) route.navigate({ type: "session", sessionID: tab.sessionID })
+        if (tab) navigate(tab.sessionID)
       },
       cycleUnread(direction: 1 | -1) {
         if (!enabled()) return
         const tab = cycleSessionTab(state().tabs, current(), direction, (tab) =>
           Boolean(status(tab.sessionID).unread || status(tab.sessionID).attention),
         )
-        if (tab) route.navigate({ type: "session", sessionID: tab.sessionID })
+        if (tab) navigate(tab.sessionID)
       },
       selectIndex(index: number) {
         if (!enabled()) return
         const tab = state().tabs[index]
-        if (tab) route.navigate({ type: "session", sessionID: tab.sessionID })
+        if (tab) navigate(tab.sessionID)
       },
     }
   },
