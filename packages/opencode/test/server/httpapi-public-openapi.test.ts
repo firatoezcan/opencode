@@ -247,6 +247,15 @@ describe("PublicApi OpenAPI v2 errors", () => {
     }
   })
 
+  test("documents v2 session resume errors", () => {
+    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
+    const responses = spec.paths["/api/session/{sessionID}/resume"]?.post?.responses
+
+    expect(responses?.["204"]).toBeDefined()
+    expect(componentNames(responses?.["404"])).toContain("SessionNotFoundError")
+    expect(componentName(responseRef(responses?.["503"]) ?? "")).toBe("ServiceUnavailableError")
+  })
+
   test("documents v2 session read data errors", () => {
     const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
 

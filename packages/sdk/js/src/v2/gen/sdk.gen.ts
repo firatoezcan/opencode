@@ -371,6 +371,8 @@ import type {
   V2SessionQuestionRejectResponses,
   V2SessionQuestionReplyErrors,
   V2SessionQuestionReplyResponses,
+  V2SessionResumeErrors,
+  V2SessionResumeResponses,
   V2SessionRevertClearErrors,
   V2SessionRevertClearResponses,
   V2SessionRevertCommitErrors,
@@ -5652,6 +5654,25 @@ export class Session3 extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Resume session
+   *
+   * Run one provider continuation from recorded session history.
+   */
+  public resume<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).post<V2SessionResumeResponses, V2SessionResumeErrors, ThrowOnError>({
+      url: "/api/session/{sessionID}/resume",
+      ...options,
+      ...params,
     })
   }
 

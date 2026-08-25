@@ -3239,7 +3239,7 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("does not continue automatically after a provider error follows a local tool call", () =>
+  it.effect("resumes a failed assistant tool turn without repeating tool execution", () =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
@@ -3261,6 +3261,27 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests).toHaveLength(1)
       expect(executions.slice(executionCount)).toEqual(["settled"])
+
+      response = fragmentFixture("text", "text-after-resume", ["Recovered without replay"]).completeEvents
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(2)
+      expect(userTexts(requests[1]!)).toEqual(["Do not continue failed provider"])
+      expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+      expect(executions.slice(executionCount)).toEqual(["settled"])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Do not continue failed provider" },
+        {
+          type: "assistant",
+          finish: "error",
+          content: [{ type: "tool", id: "call-before-provider-error", state: { status: "completed" } }],
+        },
+        {
+          type: "assistant",
+          finish: "stop",
+          content: [{ type: "text", id: "text-after-resume", text: "Recovered without replay" }],
+        },
+      ])
     }),
   )
 

@@ -550,6 +550,10 @@ describe("session HttpApi", () => {
         expect(wait.status).toBe(404)
         expect(yield* responseJson(wait)).toEqual(expected)
 
+        const resume = yield* request(`/api/session/${missing}/resume`, { method: "POST", headers })
+        expect(resume.status).toBe(404)
+        expect(yield* responseJson(resume)).toEqual(expected)
+
         const prompt = yield* request(`/api/session/${missing}/prompt`, {
           method: "POST",
           headers: { ...headers, "content-type": "application/json" },

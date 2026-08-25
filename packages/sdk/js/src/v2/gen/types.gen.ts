@@ -11596,6 +11596,45 @@ export type V2SessionPromptResponses = {
 
 export type V2SessionPromptResponse = V2SessionPromptResponses[keyof V2SessionPromptResponses]
 
+export type V2SessionResumeData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/resume"
+}
+
+export type V2SessionResumeErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
+}
+
+export type V2SessionResumeError = V2SessionResumeErrors[keyof V2SessionResumeErrors]
+
+export type V2SessionResumeResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2SessionResumeResponse = V2SessionResumeResponses[keyof V2SessionResumeResponses]
+
 export type V2SessionCompactData = {
   body?: never
   path: {
