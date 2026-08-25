@@ -110,4 +110,34 @@ describe("Auth", () => {
       await fs.rm(authPath, { force: true })
     }
   })
+
+  test("internalizes boot auth without Basic auth", async () => {
+    const previous = Flag.OPENCODE_SERVER_PASSWORD
+    const previousAuth = process.env.OPENCODE_AUTH_CONTENT
+    const apiKey = crypto.randomUUID()
+    const access = crypto.randomUUID()
+    const refresh = crypto.randomUUID()
+    Flag.OPENCODE_SERVER_PASSWORD = undefined
+    process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
+      anthropic: { type: "api", key: apiKey },
+      openai: { type: "oauth", access, refresh, expires: Date.now() + 60_000 },
+    })
+
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const auth = yield* Auth.Service
+          expect(process.env.OPENCODE_AUTH_CONTENT === undefined).toBe(true)
+          const api = yield* auth.get("anthropic")
+          const oauth = yield* auth.get("openai")
+          expect(api?.type === "api" && api.key === apiKey).toBe(true)
+          expect(oauth?.type === "oauth" && oauth.access === access && oauth.refresh === refresh).toBe(true)
+        }).pipe(Effect.provide(LayerNode.compile(Auth.node)), Effect.scoped),
+      )
+    } finally {
+      Flag.OPENCODE_SERVER_PASSWORD = previous
+      if (previousAuth === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+      else process.env.OPENCODE_AUTH_CONTENT = previousAuth
+    }
+  })
 })

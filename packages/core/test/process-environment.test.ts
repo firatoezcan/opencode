@@ -7,9 +7,7 @@ const protectedBootEnvironment = () => ({
   OPENCODE_AUTH_CONTENT: JSON.stringify({ test: { type: "api", key: crypto.randomUUID() } }),
 })
 
-test("fails closed when the parent boot environment cannot be protected", () => {
-  if (process.platform === "linux") return
-
+test.skipIf(process.platform === "linux")("fails closed when the parent boot environment cannot be protected", () => {
   const result = Bun.spawnSync({
     cmd: [process.execPath, path.join(import.meta.dir, "fixture/model-process-environment.ts")],
     env: protectedBootEnvironment(),
@@ -20,9 +18,7 @@ test("fails closed when the parent boot environment cannot be protected", () => 
   expect(result.exitCode).toBe(0)
 })
 
-test("keeps model processes from reading boot auth through their parent", () => {
-  if (process.platform !== "linux") return
-
+test.skipIf(process.platform !== "linux")("keeps model processes from reading boot auth through their parent", () => {
   const result = Bun.spawnSync({
     cmd: [process.execPath, path.join(import.meta.dir, "fixture/model-process-environment.ts")],
     env: protectedBootEnvironment(),
@@ -33,9 +29,7 @@ test("keeps model processes from reading boot auth through their parent", () => 
   expect(result.exitCode).toBe(0)
 })
 
-test("keeps boot auth out of native PTY processes", () => {
-  if (process.platform !== "linux") return
-
+test.skipIf(process.platform !== "linux")("keeps boot auth out of native PTY processes", () => {
   const result = Bun.spawnSync({
     cmd: [
       process.execPath,

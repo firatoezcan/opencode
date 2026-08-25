@@ -2,12 +2,13 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { Database as SqliteDatabase } from "bun:sqlite"
 import { expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { Credential } from "@opencode-ai/core/credential"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Integration } from "@opencode-ai/core/integration"
+import { Location } from "@opencode-ai/schema/location"
 import { tmpdir } from "../fixture/fixture"
 
 async function readRegistration(file: string, server: Bun.Subprocess) {
@@ -31,6 +32,22 @@ async function readRegistration(file: string, server: Bun.Subprocess) {
   throw new Error("Timed out waiting for V2 server registration")
 }
 
+async function readIntegration(url: URL, headers: Record<string, string>, integrationID: Integration.ID) {
+  const deadline = Date.now() + 10_000
+  const decode = Schema.decodeUnknownSync(Location.response(Schema.NullOr(Integration.Info)))
+  while (Date.now() < deadline) {
+    const response = await fetch(new URL(`/api/integration/${integrationID}`, url), {
+      headers,
+      signal: AbortSignal.timeout(2_000),
+    })
+    if (response.status !== 200) throw new Error(`V2 integration request failed with status ${response.status}`)
+    const result = decode(await response.json())
+    if (result.data) return result.data
+    await Bun.sleep(25)
+  }
+  throw new Error("Timed out waiting for V2 integration registration")
+}
+
 test(
   "uses the native V2 Basic auth configuration to protect credentials",
   async () => {
@@ -41,12 +58,14 @@ test(
       [Database.node, database],
       [Credential.node, Credential.nodeWithProtection(false)],
     ])
+    const integrationID = Integration.ID.make("opencode")
     const key = crypto.randomUUID()
 
-    await Effect.runPromise(
+    const credential = await Effect.runPromise(
       Effect.gen(function* () {
-        yield* (yield* Credential.Service).create({
-          integrationID: Integration.ID.make("openai"),
+        const credentials = yield* Credential.Service
+        return yield* credentials.create({
+          integrationID,
           value: Credential.Key.make({ type: "key", key }),
         })
       }).pipe(Effect.provide(seed), Effect.scoped),
@@ -84,17 +103,38 @@ test(
       const registration = await readRegistration(path.join(directory, "server.json"), server)
       const password = await fs.readFile(path.join(directory, "password"), "utf8")
       const authorization = Buffer.from(`opencode:${password}`).toString("base64")
+      const headers = {
+        Authorization: `Basic ${authorization}`,
+        "x-opencode-directory": encodeURIComponent(tmp.path),
+      }
       const unauthorized = await fetch(new URL("/api/health", registration.url), {
         signal: AbortSignal.timeout(2_000),
       })
       const response = await fetch(new URL("/api/health", registration.url), {
-        headers: { Authorization: `Basic ${authorization}` },
+        headers,
         signal: AbortSignal.timeout(2_000),
       })
 
       expect(unauthorized.status).toBe(401)
       expect(response.status).toBe(200)
       expect(await response.json()).toEqual({ healthy: true })
+
+      const before = await readIntegration(new URL(registration.url), headers, integrationID)
+      expect(
+        before.connections.some((connection) => connection.type === "credential" && connection.id === credential.id),
+      ).toBe(true)
+
+      const removed = await fetch(new URL(`/api/credential/${credential.id}`, registration.url), {
+        method: "DELETE",
+        headers,
+        signal: AbortSignal.timeout(2_000),
+      })
+      expect(removed.status).toBe(204)
+      const after = await readIntegration(new URL(registration.url), headers, integrationID)
+      expect(
+        after.connections.some((connection) => connection.type === "credential" && connection.id === credential.id),
+      ).toBe(false)
+
       using stored = new SqliteDatabase(filename, { readonly: true })
       expect(stored.query("SELECT id FROM credential").all()).toEqual([])
     } finally {
