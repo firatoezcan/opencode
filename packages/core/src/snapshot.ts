@@ -16,7 +16,7 @@ export const ID = Schema.String.pipe(Schema.brand("Snapshot.ID"))
 export type ID = typeof ID.Type
 
 export class Error extends Schema.TaggedErrorClass<Error>()("Snapshot.Error", {
-  operation: Schema.Literals(["capture", "files", "diff", "preview", "restore"]),
+  operation: Schema.Literals(["capture", "files", "diff", "review", "preview", "restore"]),
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
@@ -29,6 +29,10 @@ export interface CompareInput {
 export interface DiffInput extends CompareInput {
   readonly context?: number
   readonly paths?: readonly RelativePath[]
+}
+
+export interface ReviewInput {
+  readonly context?: number
 }
 
 export interface RestoreInput {
@@ -59,6 +63,9 @@ export interface Interface {
    * controls unchanged lines around each unified diff hunk.
    */
   readonly diff: (input: DiffInput) => Effect.Effect<readonly File.Diff[], Error>
+
+  /** Generate the current Location-scoped changes against the default branch merge base. */
+  readonly review: (input?: ReviewInput) => Effect.Effect<readonly File.Diff[], Error>
 
   /**
    * Preview the filesystem result of a selective restore without modifying the
@@ -175,6 +182,34 @@ const layer = Layer.effect(
         .pipe(Effect.mapError((cause) => failure("diff", cause)))
     })
 
+    const review = Effect.fn("Snapshot.review")(function* (input: ReviewInput = {}) {
+      if (!source) return []
+      const [current, branch] = yield* Effect.all([git.history.branch(source), git.history.defaultRemoteBranch(source)])
+      if (!branch || current === branch) return []
+      const base = yield* git.history.mergeBase(source, `origin/${branch}`)
+      if (!base) return []
+
+      const repo = yield* repository().pipe(Effect.mapError((cause) => failure("review", cause)))
+      const locationScope = yield* scope().pipe(Effect.mapError((cause) => failure("review", cause)))
+      const to = yield* git.tree
+        .capture({
+          repository: repo,
+          scopes: [locationScope],
+          ignores: source,
+          maximumUntrackedFileBytes: 2 * 1024 * 1024,
+        })
+        .pipe(Effect.mapError((cause) => failure("review", cause)))
+      const comparison = { repository: repo, from: Git.TreeID.make(base), to }
+      const files = yield* git.tree.files(comparison).pipe(Effect.mapError((cause) => failure("review", cause)))
+      const scoped =
+        locationScope === "."
+          ? files
+          : files.filter((file) => file === locationScope || file.startsWith(`${locationScope}/`))
+      return yield* git.tree
+        .diff({ ...comparison, context: input.context, paths: scoped })
+        .pipe(Effect.mapError((cause) => failure("review", cause)))
+    })
+
     const plan = Effect.fnUntraced(function* (operation: "preview" | "restore", input: RestoreInput) {
       const files = new Map<RelativePath, Git.TreeID>()
       for (const [file, snapshot] of input.files) {
@@ -223,7 +258,7 @@ const layer = Layer.effect(
         .pipe(Effect.mapError((cause) => failure("restore", cause)))
     })
 
-    return Service.of({ capture, files, diff, preview, restore, checkout })
+    return Service.of({ capture, files, diff, review, preview, restore, checkout })
   }),
 )
 
@@ -241,6 +276,7 @@ export const noopLayer = Layer.succeed(
     capture: () => Effect.succeed(undefined),
     files: () => Effect.succeed([]),
     diff: () => Effect.succeed([]),
+    review: () => Effect.succeed([]),
     preview: () => Effect.succeed([]),
     restore: () => Effect.void,
     checkout: () => Effect.void,
