@@ -63,10 +63,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Question") {}
 
-export interface PendingRequest {
-  readonly request: Request
-  readonly location: Location.Ref
-}
+export type PendingRequest = EventV2.Payload<typeof Event.Asked>
 
 export interface PendingRequestsInterface {
   readonly add: (input: PendingRequest) => Effect.Effect<void>
@@ -85,7 +82,7 @@ const pendingRequestsLayer = Layer.effect(
     yield* Effect.addFinalizer(() => Effect.sync(() => requests.clear()))
     return PendingRequests.of({
       add: Effect.fn("QuestionV2.PendingRequests.add")((input) =>
-        Effect.sync(() => void requests.set(input.request.id, input)),
+        Effect.sync(() => void requests.set(input.data.id, input)),
       ),
       remove: Effect.fn("QuestionV2.PendingRequests.remove")((requestID) =>
         Effect.sync(() => void requests.delete(requestID)),
@@ -139,9 +136,15 @@ const layer = Layer.effect(
           const id = ID.ascending()
           const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
           const request: Request = { id, ...input }
+          const asked = {
+            id: EventV2.ID.create(),
+            type: Event.Asked.type,
+            location: requestLocation,
+            data: request,
+          } satisfies PendingRequest
           pending.set(id, { request, deferred })
-          yield* pendingRequests.add({ request, location: requestLocation })
-          return yield* events.publish(Event.Asked, request).pipe(
+          yield* pendingRequests.add(asked)
+          return yield* events.publish(Event.Asked, request, { id: asked.id, location: requestLocation }).pipe(
             Effect.andThen(restore(Deferred.await(deferred))),
             Effect.ensuring(
               Effect.sync(() => {

@@ -1,6 +1,13 @@
 import { ProcessEnvironment } from "@opencode-ai/core/process-environment"
 
-if (process.platform !== "linux") process.exit(0)
+if (process.platform !== "linux") {
+  try {
+    ProcessEnvironment.model()
+    process.exit(1)
+  } catch {
+    process.exit(0)
+  }
+}
 
 const child = Bun.spawnSync({
   cmd: [

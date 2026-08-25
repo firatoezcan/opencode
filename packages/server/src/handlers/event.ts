@@ -27,16 +27,7 @@ export function subscription(events: EventV2.Interface, pendingQuestions: Questi
         data: {},
       }
       const live = yield* EventV2.allBounded(events, subscriberCapacity)
-      const pending = yield* pendingQuestions.list()
-      const replay = pending.map(
-        ({ request, location }) =>
-          ({
-            id: EventV2.ID.create(),
-            type: QuestionV2.Event.Asked.type,
-            location,
-            data: request,
-          }) satisfies EventV2.Payload<typeof QuestionV2.Event.Asked>,
-      )
+      const replay = yield* pendingQuestions.list()
       const replayed = new Set(replay.map((event) => event.data.id))
       const isAsked = Schema.is(QuestionV2.Event.Asked)
       return Stream.fromIterable([connected, ...replay]).pipe(

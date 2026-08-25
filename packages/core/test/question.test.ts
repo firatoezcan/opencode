@@ -61,12 +61,15 @@ describe("QuestionV2", () => {
 
       expect(request.id).toMatch(/^que_/)
       expect(yield* service.list()).toEqual([request])
-      expect(yield* pending.list()).toEqual([
+      const [pendingAsked] = yield* pending.list()
+      expect(pendingAsked).toEqual(
         expect.objectContaining({
-          request,
+          type: QuestionV2.Event.Asked.type,
+          data: request,
           location: expect.objectContaining({ directory: expect.any(String) }),
         }),
-      ])
+      )
+      expect(pendingAsked?.id).toBe(published[0]?.id)
       yield* service.reply({ requestID: request.id, answers: [["One"]] })
 
       expect(yield* Fiber.join(fiber)).toEqual([["One"]])
