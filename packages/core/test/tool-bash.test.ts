@@ -258,6 +258,50 @@ describe("BashTool", () => {
         (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
       ),
     )
+
+    it.live("omits server and boot auth from the model-controlled process environment", () =>
+      Effect.acquireUseRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) =>
+          Effect.acquireUseRelease(
+            Effect.sync(() => {
+              const previous = {
+                password: process.env.OPENCODE_SERVER_PASSWORD,
+                auth: process.env.OPENCODE_AUTH_CONTENT,
+              }
+              process.env.OPENCODE_SERVER_PASSWORD = crypto.randomUUID()
+              process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({ test: { type: "api", key: crypto.randomUUID() } })
+              return previous
+            }),
+            () => {
+              reset()
+              return withTool(
+                tmp.path,
+                (registry) =>
+                  settleTool(
+                    registry,
+                    call({
+                      command: '[ -z "${OPENCODE_SERVER_PASSWORD+x}" ] && [ -z "${OPENCODE_AUTH_CONTENT+x}" ]',
+                    }),
+                  ),
+                LayerNode.compile(AppProcess.node),
+              ).pipe(
+                Effect.tap((settled) =>
+                  Effect.sync(() => expect(settled.output?.structured).toMatchObject({ exit: 0 })),
+                ),
+              )
+            },
+            (previous) =>
+              Effect.sync(() => {
+                if (previous.password === undefined) delete process.env.OPENCODE_SERVER_PASSWORD
+                else process.env.OPENCODE_SERVER_PASSWORD = previous.password
+                if (previous.auth === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+                else process.env.OPENCODE_AUTH_CONTENT = previous.auth
+              }),
+          ),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      ),
+    )
   }
 
   it.live("approves an explicit external workdir before bash execution", () =>

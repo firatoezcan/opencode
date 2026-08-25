@@ -128,6 +128,37 @@ describe("pty", () => {
     }),
   )
 
+  ptyTest("omits server and boot auth from PTY environments", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = {
+          password: process.env.OPENCODE_SERVER_PASSWORD,
+          auth: process.env.OPENCODE_AUTH_CONTENT,
+        }
+        process.env.OPENCODE_SERVER_PASSWORD = crypto.randomUUID()
+        process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({ test: { type: "api", key: crypto.randomUUID() } })
+        return previous
+      }),
+      () =>
+        Effect.gen(function* () {
+          const info = yield* createPty("/bin/sh", [
+            "-c",
+            'read _; [ -z "${OPENCODE_SERVER_PASSWORD+x}" ] && [ -z "${OPENCODE_AUTH_CONTENT+x}" ] && printf clean || printf exposed',
+          ])
+          const attached = yield* attachCollecting(info.id)
+          attached.attachment.write("\n")
+          expect(yield* waitForOutput(attached.output, "clean")).not.toContain("exposed")
+        }),
+      (previous) =>
+        Effect.sync(() => {
+          if (previous.password === undefined) delete process.env.OPENCODE_SERVER_PASSWORD
+          else process.env.OPENCODE_SERVER_PASSWORD = previous.password
+          if (previous.auth === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+          else process.env.OPENCODE_AUTH_CONTENT = previous.auth
+        }),
+    ),
+  )
+
   ptyTest("replays buffered output and streams live output to attachments", () =>
     Effect.gen(function* () {
       const pty = yield* Pty.Service

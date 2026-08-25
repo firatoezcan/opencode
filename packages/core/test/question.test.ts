@@ -3,11 +3,22 @@ import { Context, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { EventV2 } from "@opencode-ai/core/event"
+import { Location } from "@opencode-ai/core/location"
 import { QuestionV2 } from "@opencode-ai/core/question"
+import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
-const questions = AppNodeBuilder.build(LayerNode.group([EventV2.node, QuestionV2.node]))
+const questions = AppNodeBuilder.build(
+  LayerNode.group([EventV2.node, QuestionV2.node, QuestionV2.pendingRequestsNode]),
+  [
+    [
+      Location.node,
+      Layer.succeed(Location.Service, Location.Service.of(location({ directory: AbsolutePath.make("/workspace") }))),
+    ],
+  ],
+)
 const it = testEffect(questions)
 
 const sessionID = SessionV2.ID.make("ses_question_test")
@@ -38,6 +49,7 @@ describe("QuestionV2", () => {
     Effect.gen(function* () {
       const service = yield* QuestionV2.Service
       const events = yield* EventV2.Service
+      const pending = yield* QuestionV2.PendingRequests
       const published: EventV2.Payload[] = []
       const unsubscribe = yield* events.listen((event) =>
         Effect.sync(() => {
@@ -49,10 +61,20 @@ describe("QuestionV2", () => {
 
       expect(request.id).toMatch(/^que_/)
       expect(yield* service.list()).toEqual([request])
+      const [pendingAsked] = yield* pending.list()
+      expect(pendingAsked).toEqual(
+        expect.objectContaining({
+          type: QuestionV2.Event.Asked.type,
+          data: request,
+          location: expect.objectContaining({ directory: expect.any(String) }),
+        }),
+      )
+      expect(pendingAsked?.id).toBe(published[0]?.id)
       yield* service.reply({ requestID: request.id, answers: [["One"]] })
 
       expect(yield* Fiber.join(fiber)).toEqual([["One"]])
       expect(yield* service.list()).toEqual([])
+      expect(yield* pending.list()).toEqual([])
       expect(published.map((event) => [event.type, event.data])).toEqual([
         [QuestionV2.Event.Asked.type, request],
         [QuestionV2.Event.Replied.type, { sessionID, requestID: request.id, answers: [["One"]] }],

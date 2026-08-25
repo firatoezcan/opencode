@@ -1,10 +1,11 @@
 export * as QuestionV2 from "./question"
 
-import { makeLocationNode } from "./effect/app-node"
+import { makeGlobalNode, makeLocationNode } from "./effect/app-node"
 import { Context, Deferred, Effect, Layer, Schema } from "effect"
 import { Question } from "@opencode-ai/schema/question"
 import { EventV2 } from "./event"
 import { SessionSchema } from "./session/schema"
+import { Location } from "./location"
 
 export const ID = Question.ID
 export type ID = typeof ID.Type
@@ -62,7 +63,38 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Question") {}
 
-interface Pending {
+export type PendingRequest = EventV2.Payload<typeof Event.Asked>
+
+export interface PendingRequestsInterface {
+  readonly add: (input: PendingRequest) => Effect.Effect<void>
+  readonly remove: (requestID: ID) => Effect.Effect<void>
+  readonly list: () => Effect.Effect<ReadonlyArray<PendingRequest>>
+}
+
+export class PendingRequests extends Context.Service<PendingRequests, PendingRequestsInterface>()(
+  "@opencode/v2/Question/PendingRequests",
+) {}
+
+const pendingRequestsLayer = Layer.effect(
+  PendingRequests,
+  Effect.gen(function* () {
+    const requests = new Map<ID, PendingRequest>()
+    yield* Effect.addFinalizer(() => Effect.sync(() => requests.clear()))
+    return PendingRequests.of({
+      add: Effect.fn("QuestionV2.PendingRequests.add")((input) =>
+        Effect.sync(() => void requests.set(input.data.id, input)),
+      ),
+      remove: Effect.fn("QuestionV2.PendingRequests.remove")((requestID) =>
+        Effect.sync(() => void requests.delete(requestID)),
+      ),
+      list: Effect.fn("QuestionV2.PendingRequests.list")(() => Effect.sync(() => [...requests.values()])),
+    })
+  }),
+)
+
+export const pendingRequestsNode = makeGlobalNode({ service: PendingRequests, layer: pendingRequestsLayer, deps: [] })
+
+interface PendingQuestion {
   readonly request: Request
   readonly deferred: Deferred.Deferred<ReadonlyArray<Answer>, RejectedError>
 }
@@ -76,12 +108,20 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2.Service
-    const pending = new Map<ID, Pending>()
+    const pendingRequests = yield* PendingRequests
+    const location = yield* Location.Service
+    const requestLocation = Location.Ref.make({ directory: location.directory, workspaceID: location.workspaceID })
+    const pending = new Map<ID, PendingQuestion>()
 
     yield* Effect.addFinalizer(() =>
-      Effect.forEach(pending.values(), (item) => Deferred.fail(item.deferred, new RejectedError()), {
-        discard: true,
-      }).pipe(
+      Effect.forEach(
+        pending.values(),
+        (item) =>
+          Deferred.fail(item.deferred, new RejectedError()).pipe(
+            Effect.andThen(pendingRequests.remove(item.request.id)),
+          ),
+        { discard: true },
+      ).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             pending.clear()
@@ -96,13 +136,20 @@ const layer = Layer.effect(
           const id = ID.ascending()
           const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
           const request: Request = { id, ...input }
+          const asked = {
+            id: EventV2.ID.create(),
+            type: Event.Asked.type,
+            location: requestLocation,
+            data: request,
+          } satisfies PendingRequest
           pending.set(id, { request, deferred })
-          return yield* events.publish(Event.Asked, request).pipe(
+          yield* pendingRequests.add(asked)
+          return yield* events.publish(Event.Asked, request, { id: asked.id, location: requestLocation }).pipe(
             Effect.andThen(restore(Deferred.await(deferred))),
             Effect.ensuring(
               Effect.sync(() => {
                 pending.delete(id)
-              }),
+              }).pipe(Effect.andThen(pendingRequests.remove(id))),
             ),
           )
         }),
@@ -121,6 +168,7 @@ const layer = Layer.effect(
           })
           yield* Deferred.succeed(existing.deferred, input.answers)
           pending.delete(input.requestID)
+          yield* pendingRequests.remove(input.requestID)
         }),
       ),
     )
@@ -136,6 +184,7 @@ const layer = Layer.effect(
           })
           yield* Deferred.fail(existing.deferred, new RejectedError())
           pending.delete(requestID)
+          yield* pendingRequests.remove(requestID)
         }),
       ),
     )
@@ -150,4 +199,8 @@ const layer = Layer.effect(
 
 export const locationLayer = layer
 
-export const node = makeLocationNode({ service: Service, layer, deps: [EventV2.node] })
+export const node = makeLocationNode({
+  service: Service,
+  layer,
+  deps: [EventV2.node, Location.node, pendingRequestsNode],
+})

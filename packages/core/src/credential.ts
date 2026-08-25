@@ -1,12 +1,13 @@
 export * as Credential from "./credential"
 
-import { asc, eq } from "drizzle-orm"
+import { asc, eq, isNotNull } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Credential } from "@opencode-ai/schema/credential"
 import { Integration } from "@opencode-ai/schema/integration"
 import { Database } from "./database/database"
 import { makeGlobalNode } from "./effect/app-node"
 import { CredentialTable } from "./credential/sql"
+import { Flag } from "./flag/flag"
 
 export const ID = Credential.ID
 export type ID = Credential.ID
@@ -48,91 +49,175 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Credential") {}
 
-const layer = Layer.effect(
-  Service,
-  Effect.gen(function* () {
-    const { db } = yield* Database.Service
-    const decode = Schema.decodeUnknownSync(Value)
-    const stored = (row: typeof CredentialTable.$inferSelect) => {
-      if (!row.integration_id) return
-      return new Info({
-        id: row.id,
-        integrationID: row.integration_id,
-        label: row.label,
-        value: decode(row.value),
-      })
-    }
+const serviceLayer = (protectedServer?: boolean) =>
+  Layer.effect(
+    Service,
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const decode = Schema.decodeUnknownSync(Value)
+      const stored = (row: typeof CredentialTable.$inferSelect) => {
+        if (!row.integration_id) return
+        return new Info({
+          id: row.id,
+          integrationID: row.integration_id,
+          label: row.label,
+          value: decode(row.value),
+        })
+      }
 
-    return Service.of({
-      all: Effect.fn("Credential.all")(function* () {
-        return (yield* db
-          .select()
-          .from(CredentialTable)
-          .orderBy(asc(CredentialTable.time_created))
-          .all()
-          .pipe(Effect.orDie)).flatMap((row) => {
-          const credential = stored(row)
-          return credential ? [credential] : []
-        })
-      }),
-      list: Effect.fn("Credential.list")(function* (integrationID) {
-        return (yield* db
-          .select()
-          .from(CredentialTable)
-          .where(eq(CredentialTable.integration_id, integrationID))
-          .orderBy(asc(CredentialTable.time_created))
-          .all()
-          .pipe(Effect.orDie)).flatMap((row) => {
-          const credential = stored(row)
-          return credential ? [credential] : []
-        })
-      }),
-      get: Effect.fn("Credential.get")(function* (id) {
-        const row = yield* db.select().from(CredentialTable).where(eq(CredentialTable.id, id)).get().pipe(Effect.orDie)
-        return row ? stored(row) : undefined
-      }),
-      create: Effect.fn("Credential.create")(function* (input) {
-        const credential = new Info({
-          id: ID.create(),
-          integrationID: input.integrationID,
-          label: input.label ?? "default",
-          value: input.value,
-        })
-        yield* db
-          .transaction((tx) =>
-            Effect.gen(function* () {
-              yield* tx
-                .delete(CredentialTable)
-                .where(eq(CredentialTable.integration_id, credential.integrationID))
-                .run()
-              yield* tx
-                .insert(CredentialTable)
-                .values({
-                  id: credential.id,
-                  integration_id: credential.integrationID,
-                  label: credential.label,
-                  value: credential.value,
-                })
-                .run()
-            }),
+      if (protectedServer ?? Boolean(Flag.OPENCODE_SERVER_PASSWORD)) {
+        const timeout = (yield* db.values<[number]>("PRAGMA busy_timeout").pipe(Effect.orDie))[0]?.[0] ?? 0
+        const credentials = yield* Effect.gen(function* () {
+          yield* db.run("PRAGMA busy_timeout = 0").pipe(Effect.orDie)
+          yield* db.run("PRAGMA secure_delete = ON").pipe(Effect.orDie)
+          const loaded = new Map(
+            (yield* db
+              .select()
+              .from(CredentialTable)
+              .where(isNotNull(CredentialTable.integration_id))
+              .orderBy(asc(CredentialTable.time_created))
+              .all()
+              .pipe(Effect.orDie))
+              .flatMap((row) => {
+                const credential = stored(row)
+                return credential ? [credential] : []
+              })
+              .map((credential) => [credential.id, credential]),
           )
-          .pipe(Effect.orDie)
-        return credential
-      }),
-      update: Effect.fn("Credential.update")(function* (id, updates) {
-        if (!updates.label && !updates.value) return
-        yield* db
-          .update(CredentialTable)
-          .set({ label: updates.label, value: updates.value })
-          .where(eq(CredentialTable.id, id))
-          .run()
-          .pipe(Effect.orDie)
-      }),
-      remove: Effect.fn("Credential.remove")(function* (id) {
-        yield* db.delete(CredentialTable).where(eq(CredentialTable.id, id)).run().pipe(Effect.orDie)
-      }),
-    })
-  }),
-)
+          yield* db.delete(CredentialTable).where(isNotNull(CredentialTable.integration_id)).run().pipe(Effect.orDie)
+          const checkpoint = yield* db
+            .values<[number, number, number]>("PRAGMA wal_checkpoint(TRUNCATE)")
+            .pipe(Effect.orDie)
+          if (
+            checkpoint.length !== 1 ||
+            checkpoint[0]?.[0] !== 0 ||
+            checkpoint[0]?.[1] !== 0 ||
+            checkpoint[0]?.[2] !== 0
+          )
+            return yield* Effect.die(new Error("Protected credential plaintext could not be removed from SQLite WAL"))
+          yield* db.run("PRAGMA secure_delete = OFF").pipe(Effect.orDie)
+          return loaded
+        }).pipe(Effect.ensuring(db.run(`PRAGMA busy_timeout = ${Math.max(0, Math.trunc(timeout))}`).pipe(Effect.orDie)))
 
-export const node = makeGlobalNode({ service: Service, layer, deps: [Database.node] })
+        return Service.of({
+          all: Effect.fn("Credential.all")(() => Effect.sync(() => [...credentials.values()])),
+          list: Effect.fn("Credential.list")((integrationID) =>
+            Effect.sync(() =>
+              [...credentials.values()].filter((credential) => credential.integrationID === integrationID),
+            ),
+          ),
+          get: Effect.fn("Credential.get")((id) => Effect.sync(() => credentials.get(id))),
+          create: Effect.fn("Credential.create")((input) =>
+            Effect.sync(() => {
+              for (const [id, credential] of credentials) {
+                if (credential.integrationID === input.integrationID) credentials.delete(id)
+              }
+              const credential = new Info({
+                id: ID.create(),
+                integrationID: input.integrationID,
+                label: input.label ?? "default",
+                value: input.value,
+              })
+              credentials.set(credential.id, credential)
+              return credential
+            }),
+          ),
+          update: Effect.fn("Credential.update")((id, updates) =>
+            Effect.sync(() => {
+              if (!updates.label && !updates.value) return
+              const credential = credentials.get(id)
+              if (!credential) return
+              credentials.set(
+                id,
+                new Info({
+                  ...credential,
+                  label: updates.label ?? credential.label,
+                  value: updates.value ?? credential.value,
+                }),
+              )
+            }),
+          ),
+          remove: Effect.fn("Credential.remove")((id) => Effect.sync(() => void credentials.delete(id))),
+        })
+      }
+
+      return Service.of({
+        all: Effect.fn("Credential.all")(function* () {
+          return (yield* db
+            .select()
+            .from(CredentialTable)
+            .orderBy(asc(CredentialTable.time_created))
+            .all()
+            .pipe(Effect.orDie)).flatMap((row) => {
+            const credential = stored(row)
+            return credential ? [credential] : []
+          })
+        }),
+        list: Effect.fn("Credential.list")(function* (integrationID) {
+          return (yield* db
+            .select()
+            .from(CredentialTable)
+            .where(eq(CredentialTable.integration_id, integrationID))
+            .orderBy(asc(CredentialTable.time_created))
+            .all()
+            .pipe(Effect.orDie)).flatMap((row) => {
+            const credential = stored(row)
+            return credential ? [credential] : []
+          })
+        }),
+        get: Effect.fn("Credential.get")(function* (id) {
+          const row = yield* db
+            .select()
+            .from(CredentialTable)
+            .where(eq(CredentialTable.id, id))
+            .get()
+            .pipe(Effect.orDie)
+          return row ? stored(row) : undefined
+        }),
+        create: Effect.fn("Credential.create")(function* (input) {
+          const credential = new Info({
+            id: ID.create(),
+            integrationID: input.integrationID,
+            label: input.label ?? "default",
+            value: input.value,
+          })
+          yield* db
+            .transaction((tx) =>
+              Effect.gen(function* () {
+                yield* tx
+                  .delete(CredentialTable)
+                  .where(eq(CredentialTable.integration_id, credential.integrationID))
+                  .run()
+                yield* tx
+                  .insert(CredentialTable)
+                  .values({
+                    id: credential.id,
+                    integration_id: credential.integrationID,
+                    label: credential.label,
+                    value: credential.value,
+                  })
+                  .run()
+              }),
+            )
+            .pipe(Effect.orDie)
+          return credential
+        }),
+        update: Effect.fn("Credential.update")(function* (id, updates) {
+          if (!updates.label && !updates.value) return
+          yield* db
+            .update(CredentialTable)
+            .set({ label: updates.label, value: updates.value })
+            .where(eq(CredentialTable.id, id))
+            .run()
+            .pipe(Effect.orDie)
+        }),
+        remove: Effect.fn("Credential.remove")(function* (id) {
+          yield* db.delete(CredentialTable).where(eq(CredentialTable.id, id)).run().pipe(Effect.orDie)
+        }),
+      })
+    }),
+  )
+
+export const node = makeGlobalNode({ service: Service, layer: serviceLayer(), deps: [Database.node] })
+export const protectedNode = makeGlobalNode({ service: Service, layer: serviceLayer(true), deps: [Database.node] })
+export const unprotectedNode = makeGlobalNode({ service: Service, layer: serviceLayer(false), deps: [Database.node] })
