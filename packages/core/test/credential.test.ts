@@ -51,7 +51,7 @@ describe("Credential", () => {
     const app = (protectedServer: boolean) =>
       AppNodeBuilder.build(LayerNode.group([Integration.node, Credential.node, EventV2.node, Database.node]), [
         [Database.node, database],
-        [Credential.node, Credential.nodeWithProtection(protectedServer)],
+        [Credential.node, protectedServer ? Credential.protectedNode : Credential.unprotectedNode],
       ])
 
     await Effect.runPromise(
@@ -109,7 +109,7 @@ describe("Credential", () => {
       const app = (protectedServer: boolean) =>
         AppNodeBuilder.build(LayerNode.group([Integration.node, Credential.node, EventV2.node, Database.node]), [
           [Database.node, database],
-          [Credential.node, Credential.nodeWithProtection(protectedServer)],
+          [Credential.node, protectedServer ? Credential.protectedNode : Credential.unprotectedNode],
         ])
 
       await Effect.runPromise(

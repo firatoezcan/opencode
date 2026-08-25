@@ -56,7 +56,7 @@ test(
     const database = Database.layerFromPath(filename)
     const seed = AppNodeBuilder.build(LayerNode.group([Credential.node, Database.node]), [
       [Database.node, database],
-      [Credential.node, Credential.nodeWithProtection(false)],
+      [Credential.node, Credential.unprotectedNode],
     ])
     const integrationID = Integration.ID.make("opencode")
     const key = crypto.randomUUID()

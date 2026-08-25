@@ -60,7 +60,7 @@ const layer = Layer.effect(
       if (process.env.OPENCODE_AUTH_CONTENT) {
         try {
           return JSON.parse(process.env.OPENCODE_AUTH_CONTENT)
-        } catch (err) {}
+        } catch {}
       }
 
       const data = (yield* fsys.readJson(file).pipe(Effect.orElseSucceed(() => ({})))) as Record<string, unknown>
@@ -68,7 +68,7 @@ const layer = Layer.effect(
     })
 
     let memory: Record<string, Info> | undefined
-    if (Flag.OPENCODE_SERVER_PASSWORD) {
+    if (Flag.OPENCODE_SERVER_PASSWORD || process.env.OPENCODE_AUTH_CONTENT !== undefined) {
       memory = yield* read()
       delete process.env.OPENCODE_AUTH_CONTENT
       delete process.env.OPENCODE_SERVER_PASSWORD

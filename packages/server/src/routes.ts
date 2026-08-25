@@ -60,7 +60,7 @@ function makeRoutes<AuthError, AuthServices>(
       ? AppNodeBuilder.build(applicationServices, [[SessionExecution.node, SessionExecutionLocal.node]])
       : AppNodeBuilder.build(applicationServices, [
           [SessionExecution.node, SessionExecutionLocal.node],
-          [Credential.node, Credential.nodeWithProtection(protectedServer)],
+          [Credential.node, protectedServer ? Credential.protectedNode : Credential.unprotectedNode],
         ])
 
   return HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(

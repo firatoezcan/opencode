@@ -42,7 +42,7 @@ function bind(hostname: string, port: number, password: string) {
       Layer.provideMerge(NodeHttpServer.layer(() => createServer(), { port, host: hostname })),
       Layer.provide(
         AppNodeBuilder.build(LayerNode.group([Credential.node, PermissionSaved.node]), [
-          [Credential.node, Credential.nodeWithProtection(Boolean(password))],
+          [Credential.node, Credential.protectedNode],
         ]),
       ),
     ),

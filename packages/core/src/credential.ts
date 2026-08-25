@@ -218,8 +218,6 @@ const serviceLayer = (protectedServer?: boolean) =>
     }),
   )
 
-export function nodeWithProtection(protectedServer: boolean) {
-  return makeGlobalNode({ service: Service, layer: serviceLayer(protectedServer), deps: [Database.node] })
-}
-
 export const node = makeGlobalNode({ service: Service, layer: serviceLayer(), deps: [Database.node] })
+export const protectedNode = makeGlobalNode({ service: Service, layer: serviceLayer(true), deps: [Database.node] })
+export const unprotectedNode = makeGlobalNode({ service: Service, layer: serviceLayer(false), deps: [Database.node] })
