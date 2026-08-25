@@ -23,6 +23,11 @@ export type ChangeSet = typeof ChangeSet.Type
 export const TreeID = Schema.String.pipe(Schema.brand("Git.TreeID"))
 export type TreeID = typeof TreeID.Type
 
+export interface DefaultBranch {
+  readonly name: string
+  readonly ref: string
+}
+
 export class OperationError extends Schema.TaggedErrorClass<OperationError>()("Git.OperationError", {
   operation: Schema.Literals([
     "clone",
@@ -82,7 +87,7 @@ export interface Interface {
   readonly history: {
     readonly head: (repository: Repository) => Effect.Effect<string | undefined>
     readonly branch: (repository: Repository) => Effect.Effect<string | undefined>
-    readonly defaultRemoteBranch: (repository: Repository, remote?: string) => Effect.Effect<string | undefined>
+    readonly defaultBranch: (repository: Repository) => Effect.Effect<DefaultBranch | undefined>
     readonly mergeBase: (repository: Repository, revision: string) => Effect.Effect<string | undefined>
     readonly rootCommits: (repository: Repository) => Effect.Effect<readonly string[]>
   }
@@ -231,13 +236,37 @@ const layer = Layer.effect(
       return result.text.trim() || undefined
     })
 
-    const remoteHead = Effect.fn("Git.history.defaultRemoteBranch")(function* (
-      repository: Repository,
-      remoteName = "origin",
-    ) {
-      const result = yield* run(repository.worktree, proc)(["symbolic-ref", `refs/remotes/${remoteName}/HEAD`])
-      if (result.exitCode !== 0) return undefined
-      return result.text.trim().replace(new RegExp(`^refs/remotes/${remoteName}/`), "") || undefined
+    const defaultBranch = Effect.fn("Git.history.defaultBranch")(function* (repository: Repository) {
+      const remoteResult = yield* run(repository.worktree, proc)(["remote"])
+      const remotes = remoteResult.text
+        .split("\n")
+        .map((item) => item.trim())
+        .filter(Boolean)
+      const primary = remotes.includes("origin")
+        ? "origin"
+        : remotes.length > 1 && remotes.includes("upstream")
+          ? "upstream"
+          : remotes[0]
+      if (primary) {
+        const head = yield* run(repository.worktree, proc)(["symbolic-ref", `refs/remotes/${primary}/HEAD`])
+        if (head.exitCode === 0) {
+          const full = head.text.trim()
+          const ref = full.startsWith("refs/remotes/") ? full.slice("refs/remotes/".length) : full
+          const name = ref.startsWith(`${primary}/`) ? ref.slice(`${primary}/`.length) : undefined
+          if (name) return { name, ref }
+        }
+      }
+
+      const refs = yield* run(repository.worktree, proc)(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+      const branches = refs.text
+        .split("\n")
+        .map((item) => item.trim())
+        .filter(Boolean)
+      const configured = (yield* run(repository.worktree, proc)(["config", "init.defaultBranch"])).text.trim()
+      if (configured && branches.includes(configured)) return { name: configured, ref: configured }
+      if (branches.includes("main")) return { name: "main", ref: "main" }
+      if (branches.includes("master")) return { name: "master", ref: "master" }
+      return undefined
     })
 
     const mergeBase = Effect.fn("Git.history.mergeBase")(function* (repository: Repository, revision: string) {
@@ -932,7 +961,7 @@ const layer = Layer.effect(
     return Service.of({
       repo: { discover, clone, create },
       remote: { get: remote },
-      history: { head, branch, defaultRemoteBranch: remoteHead, mergeBase, rootCommits: roots },
+      history: { head, branch, defaultBranch, mergeBase, rootCommits: roots },
       sync: { fetchRemotes: fetch, fetchBranch, checkoutRemoteBranch: checkout, resetHard: reset },
       change: { capture, apply, discard },
       worktree: { create: worktreeCreate, remove: worktreeRemove, list: worktreeList },

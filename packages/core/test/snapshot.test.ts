@@ -84,10 +84,8 @@ describe("Snapshot", () => {
             await $`git add .`.cwd(project).quiet()
             await $`git commit -m initial`.cwd(project).quiet()
             await $`git branch -M main`.cwd(project).quiet()
-            await $`git update-ref refs/remotes/origin/main HEAD`.cwd(project).quiet()
-            await $`git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main`.cwd(project).quiet()
             await $`git switch -c feature`.cwd(project).quiet()
-            await fs.writeFile(path.join(project, "tracked.txt"), "two\n")
+            await fs.writeFile(path.join(project, "tracked.txt"), "two changed\n")
             await fs.writeFile(path.join(project, "added.txt"), "added\n")
           })
 

@@ -2,8 +2,6 @@
 import { Schema } from "effect"
 import type { EventsSubscribeOutput } from "./types"
 
-import type * as Brand from "effect/Brand"
-
 const Location_Ref = Schema.Struct({
   directory: Schema.String.pipe(Schema.brand("AbsolutePath")),
   workspaceID: Schema.optionalKey(Schema.String.check(Schema.isStartsWith("wrk")).pipe(Schema.brand("WorkspaceV2.ID"))),

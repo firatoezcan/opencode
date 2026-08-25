@@ -184,9 +184,9 @@ const layer = Layer.effect(
 
     const review = Effect.fn("Snapshot.review")(function* (input: ReviewInput = {}) {
       if (!source) return []
-      const [current, branch] = yield* Effect.all([git.history.branch(source), git.history.defaultRemoteBranch(source)])
-      if (!branch || current === branch) return []
-      const base = yield* git.history.mergeBase(source, `origin/${branch}`)
+      const [current, branch] = yield* Effect.all([git.history.branch(source), git.history.defaultBranch(source)])
+      if (!branch || current === branch.name) return []
+      const base = yield* git.history.mergeBase(source, branch.ref)
       if (!base) return []
 
       const repo = yield* repository().pipe(Effect.mapError((cause) => failure("review", cause)))

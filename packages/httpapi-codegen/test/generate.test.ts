@@ -48,6 +48,58 @@ describe("HttpApiCodegen.generate", () => {
     )
   })
 
+  test("emits selected Promise runtime output decoders from encoded schemas", async () => {
+    const contract = compileContract(
+      api(
+        HttpApiEndpoint.get("subscribe", "/event", {
+          success: HttpApiSchema.StreamSse({
+            data: Schema.Struct({
+              id: Schema.String.pipe(Schema.brand("EventID")),
+              count: Schema.NumberFromString,
+            }),
+          }),
+        }),
+      ),
+    )
+    const output = emitPromise(contract, { runtimeOutputs: new Set(["session.subscribe"]) })
+
+    expect(output.files.map((file) => file.path)).toEqual([
+      "types.ts",
+      "client-error.ts",
+      "client.ts",
+      "schema.ts",
+      "index.ts",
+    ])
+    const schema = output.files.find((file) => file.path === "schema.ts")?.content
+    expect(schema).toContain("export const SessionSubscribeOutputSchema")
+    expect(schema).toContain("export const decodeSessionSubscribeOutput")
+    expect(schema).not.toContain('import type * as Brand from "effect/Brand"')
+
+    expect(() => emitPromise(contract, { runtimeOutputs: new Set(["session.missing"]) })).toThrow(
+      "Missing Promise runtime output: session.missing",
+    )
+    expect(() =>
+      emitPromise(
+        compileContract(
+          api(HttpApiEndpoint.post("interrupt", "/session/interrupt", { success: HttpApiSchema.NoContent })),
+        ),
+        { runtimeOutputs: new Set(["session.interrupt"]) },
+      ),
+    ).toThrow("Unsupported Promise runtime output: session.interrupt")
+
+    const directory = await mkdtemp(join(import.meta.dir, "generated-runtime-"))
+    try {
+      await Promise.all(output.files.map((file) => Bun.write(join(directory, file.path), file.content)))
+      const generated = await import(`${join(directory, "schema.ts")}?t=${crypto.randomUUID()}`)
+      const encoded = { id: "evt_test", count: "1" }
+
+      expect(generated.decodeSessionSubscribeOutput(encoded)).toEqual(encoded)
+      expect(() => generated.decodeSessionSubscribeOutput({ ...encoded, count: 1 })).toThrow()
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   test("emits an Effect client against an imported authoritative API", () => {
     const output = emitEffectImported(
       compileContract(
