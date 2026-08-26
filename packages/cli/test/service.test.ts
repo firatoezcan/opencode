@@ -1,4 +1,5 @@
 import { NodeFileSystem } from "@effect/platform-node"
+import { OpenCode } from "@opencode-ai/client"
 import { Service, type Info } from "@opencode-ai/client/effect/service"
 import { Global } from "@opencode-ai/util/global"
 import { OPENCODE_VERSION } from "../src/version"
@@ -19,6 +20,51 @@ test("managed service ports are stable per installation channel", () => {
   expect(ServiceConfig.defaultPort("preview-a")).toBe(ServiceConfig.defaultPort("preview-a"))
   expect(ServiceConfig.defaultPort("preview-a")).not.toBe(ServiceConfig.defaultPort("preview-b"))
 })
+
+test("foreground server persists native session events across restart", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-foreground-events-"))
+  const port = await availablePort()
+  const password = "foreground-events"
+  const command = [
+    process.execPath,
+    path.join(import.meta.dir, "../src/index.ts"),
+    "serve",
+    "--hostname",
+    "127.0.0.1",
+    "--port",
+    String(port),
+  ]
+  const env = { ...serviceEnv(root), OPENCODE_PASSWORD: password }
+  const owner = Bun.spawn(command, { env, stderr: "pipe", stdout: "ignore" })
+  const client = OpenCode.make({
+    baseUrl: `http://127.0.0.1:${port}`,
+    headers: { authorization: "Basic " + btoa(`opencode:${password}`) },
+  })
+
+  try {
+    await waitForHealth(client)
+    const session = await client.session.create({ location: { directory: root } })
+    owner.kill("SIGTERM")
+    await owner.exited
+
+    const replacement = Bun.spawn(command, { env, stderr: "pipe", stdout: "ignore" })
+    try {
+      await waitForHealth(client)
+      const events = []
+      for await (const event of client.session.log({ sessionID: session.id })) events.push(event)
+
+      expect(events.some((event) => event.type === "session.created")).toBe(true)
+      expect(events.at(-1)?.type).toBe("log.synced")
+    } finally {
+      replacement.kill("SIGTERM")
+      await replacement.exited
+    }
+  } finally {
+    owner.kill("SIGTERM")
+    await owner.exited
+    await fs.rm(root, { recursive: true, force: true })
+  }
+}, 30_000)
 
 test("local channel stores service config with the local service filename", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-"))
@@ -528,6 +574,20 @@ async function waitForInfo(file: string, accept: (info: Info) => boolean = () =>
     await Bun.sleep(50)
   }
   throw new Error("Timed out waiting for service registration")
+}
+
+async function waitForHealth(client: ReturnType<typeof OpenCode.make>) {
+  for (let attempt = 0; attempt < 400; attempt++) {
+    if (
+      await client.health.get().then(
+        () => true,
+        () => false,
+      )
+    )
+      return
+    await Bun.sleep(50)
+  }
+  throw new Error("Timed out waiting for server health")
 }
 
 async function waitForFailed(info: Info) {
