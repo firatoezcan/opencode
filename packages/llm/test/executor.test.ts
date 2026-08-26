@@ -315,6 +315,30 @@ describe("RequestExecutor", () => {
     ),
   )
 
+  it.effect("treats structured model routing rejections as retryable provider failures", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expectLLMError(error)
+      expect(error.reason).toMatchObject({ _tag: "ProviderInternal", status: 401 })
+      expect(error.retryable).toBe(true)
+    }).pipe(
+      Effect.provide(
+        responsesLayer(
+          Array.from(
+            { length: 3 },
+            () =>
+              new Response('{"type":"error","error":{"type":"ModelError","message":"Model unavailable"}}', {
+                status: 401,
+                headers: { "retry-after-ms": "0" },
+              }),
+          ),
+        ),
+      ),
+    ),
+  )
+
   it.effect("redacts common secret fields in response bodies", () =>
     Effect.gen(function* () {
       const executor = yield* RequestExecutor.Service

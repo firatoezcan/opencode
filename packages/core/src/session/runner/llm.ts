@@ -297,7 +297,17 @@ const layer = Layer.effect(
           const llmFailure = failure instanceof LLMError ? failure : undefined
           if (llmFailure && !publisher.hasProviderError()) {
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
-            yield* withPublication(publisher.failAssistant(llmFailure.reason.message))
+            const http = "http" in llmFailure.reason ? llmFailure.reason.http : undefined
+            yield* withPublication(
+              publisher.failProvider({
+                message: llmFailure.reason.message,
+                statusCode:
+                  http?.response?.status ?? ("status" in llmFailure.reason ? llmFailure.reason.status : undefined),
+                isRetryable: llmFailure.retryable,
+                responseHeaders: http?.response?.headers,
+                responseBody: http?.body,
+              }),
+            )
           }
           if (stream._tag === "Failure" && Cause.hasInterrupts(stream.cause)) yield* FiberSet.clear(toolFibers)
           const settled = yield* restore(awaitToolFibers(toolFibers)).pipe(Effect.exit)

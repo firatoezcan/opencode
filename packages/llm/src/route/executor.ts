@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Layer, Random } from "effect"
+import { Cause, Context, Effect, Layer, Option, Random, Schema } from "effect"
 import {
   FetchHttpClient,
   Headers,
@@ -89,6 +89,14 @@ const requestId = (headers: Record<string, string>) => {
 }
 
 const retryableStatus = (status: number) => status === 429 || status === 503 || status === 504 || status === 529
+const decodeModelRoutingRejection = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      type: Schema.Literal("error"),
+      error: Schema.Struct({ type: Schema.Literal("ModelError") }),
+    }),
+  ),
+)
 
 const retryAfterMs = (headers: Record<string, string>) => {
   const millis = Number(headers["retry-after-ms"])
@@ -232,6 +240,14 @@ const statusReason = (input: {
   const body = input.http.body ?? ""
   if (/content[-_\s]?policy|content_filter|safety/i.test(body)) {
     return new ContentPolicyReason({ message: input.message, http: input.http })
+  }
+  if (input.status === 401 && Option.isSome(decodeModelRoutingRejection(body))) {
+    return new ProviderInternalReason({
+      message: input.message,
+      status: input.status,
+      retryAfterMs: input.retryAfterMs,
+      http: input.http,
+    })
   }
   if (input.status === 401) {
     return new AuthenticationReason({ message: input.message, kind: "invalid", http: input.http })

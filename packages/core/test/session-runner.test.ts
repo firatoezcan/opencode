@@ -6,6 +6,7 @@ import {
   Model,
   TransportReason,
   InvalidRequestReason,
+  ProviderInternalReason,
   type LLMClientShape,
   type LLMRequest,
 } from "@opencode-ai/llm"
@@ -3236,6 +3237,36 @@ describe("SessionRunnerLLM", () => {
         { type: "user", text: "Fail raw stream durably" },
         { type: "assistant", finish: "error", error: { type: "unknown", message: "Provider unavailable" } },
       ])
+    }),
+  )
+
+  it.effect("publishes the native retry decision before a retryable provider step failure", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Retry provider durably" }), resume: false })
+      responseStream = Stream.fail(
+        new LLMError({
+          module: "test",
+          method: "stream",
+          reason: new ProviderInternalReason({ message: "Provider unavailable", status: 503 }),
+        }),
+      )
+
+      yield* session.resume(sessionID).pipe(Effect.flip)
+
+      const { db } = yield* Database.Service
+      const [retry] = yield* db
+        .select({ data: EventTable.data })
+        .from(EventTable)
+        .where(eq(EventTable.type, EventV2.versionedType(SessionEvent.Retried.type, 1)))
+        .all()
+        .pipe(Effect.orDie)
+      expect(retry?.data).toMatchObject({
+        sessionID,
+        attempt: 1,
+        error: { message: "Provider unavailable", statusCode: 503, isRetryable: true },
+      })
     }),
   )
 
