@@ -13,16 +13,12 @@
 //   - OPENCODE_DISABLE_AUTOUPDATE / AUTOCOMPACT / MODELS_FETCH : no background work
 // Plus HOME / XDG_* pointing at the tmpdir for belt-and-suspenders isolation.
 //
-// Today only `opencode.run` is fully wired. The shape supports adding more
-// builders (`opencode.serve(opts)`, `opencode.acp(opts)`, `opencode.auth(...)`)
-// without changing the fixture. Long-lived commands like `serve` will need a
-// different return shape — see the TODO at the bottom of OpencodeCli.
 import { test, type TestOptions } from "bun:test"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppProcess } from "@opencode-ai/core/process"
-import { Deferred, Duration, Effect, Layer, Queue, Schedule, Scope, Stream } from "effect"
+import { Deferred, Duration, Effect, Fiber, Layer, Queue, Schedule, Scope, Stream } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcess } from "effect/unstable/process"
 import path from "node:path"
@@ -106,7 +102,7 @@ export type RunOpts = SpawnOpts & {
 // `opencode serve` is a long-lived process — it never exits on its own.
 // `serve(opts)` therefore returns a handle inside the caller's Scope: the
 // subprocess is killed when the scope closes (test end), and the URL the
-// server actually bound to (port 0 means OS-assigned) is parsed off stdout.
+// server actually bound to is parsed off stdout.
 export type ServeOpts = SpawnOpts & {
   readonly port?: number
   readonly hostname?: string
@@ -128,6 +124,7 @@ export type ServeHandle = {
   readonly kill: () => void
   // Resolves with the exit code once the process exits. Bun returns a number.
   readonly exited: Promise<number>
+  readonly result: Effect.Effect<RunResult>
 }
 
 // `opencode acp` speaks newline-delimited JSON-RPC over stdin/stdout. It is
@@ -182,12 +179,17 @@ export type CliFixture = {
   readonly opencode: OpencodeCli
 }
 
+export type CliFixtureOptions = {
+  readonly executable?: string
+}
+
 // Provisions a TestLLMServer + tmpdir + spawn helper and invokes fn. Cleans
 // up the tmpdir on scope exit. TestLLMServer.layer is provided internally so
 // the caller doesn't need to wire it up — the fixture's lifetime is tied to
 // the surrounding Scope.
 export function withCliFixture<A, E>(
   fn: (input: CliFixture) => Effect.Effect<A, E, Scope.Scope | HttpClient.HttpClient>,
+  fixtureOpts?: CliFixtureOptions,
 ): Effect.Effect<A, E | unknown, Scope.Scope> {
   return Effect.gen(function* () {
     const llm = yield* TestLLMServer
@@ -203,6 +205,8 @@ export function withCliFixture<A, E>(
 
     const configJson = JSON.stringify(testProviderConfig(llm.url))
     const env = isolatedEnv(home, configJson)
+    const executable = fixtureOpts?.executable ?? "bun"
+    const executableArgs = fixtureOpts?.executable ? [] : ["run", "--conditions=browser", cliEntry]
 
     const spawn = Effect.fn("opencode.spawn")(function* (args: string[], opts?: SpawnOpts) {
       const start = Date.now()
@@ -211,7 +215,7 @@ export function withCliFixture<A, E>(
       // on `Bun.stdin.text()` (see src/cli/cmd/run.ts — non-TTY stdin is
       // consumed as the prompt). The old Process.run wrapper defaulted to
       // ignore; ChildProcess.make defaults to pipe, so we set it explicitly.
-      const command = ChildProcess.make("bun", ["run", "--conditions=browser", cliEntry, ...args], {
+      const command = ChildProcess.make(executable, [...executableArgs, ...args], {
         cwd: home,
         env: { ...env, ...opts?.env },
         extendEnv: true,
@@ -283,7 +287,7 @@ export function withCliFixture<A, E>(
       const options = runOpts(opts)
       const proc = yield* Effect.acquireRelease(
         Effect.sync(() =>
-          Bun.spawn(["bun", "run", "--conditions=browser", cliEntry, ...runArgs(message, opts)], {
+          Bun.spawn([executable, ...executableArgs, ...runArgs(message, opts)], {
             cwd: home,
             env: { ...process.env, ...env, ...options?.env },
             stdin: "ignore",
@@ -312,9 +316,8 @@ export function withCliFixture<A, E>(
     })
 
     const serve = Effect.fn("opencode.serve")(function* (opts?: ServeOpts) {
+      const start = Date.now()
       const argv = ["serve"]
-      // Default port 0 — let the OS pick a free port, parse the actual one
-      // off stdout. Hard-coded ports flake under parallel tests.
       argv.push("--port", String(opts?.port ?? 0))
       if (opts?.hostname) argv.push("--hostname", opts.hostname)
       if (opts?.extraArgs) argv.push(...opts.extraArgs)
@@ -324,7 +327,7 @@ export function withCliFixture<A, E>(
       // as a finalizer error during test teardown.
       const proc = yield* Effect.acquireRelease(
         Effect.sync(() =>
-          Bun.spawn(["bun", "run", "--conditions=browser", cliEntry, ...argv], {
+          Bun.spawn([executable, ...executableArgs, ...argv], {
             cwd: home,
             env: { ...process.env, ...env, ...opts?.env },
             stdout: "pipe",
@@ -341,18 +344,20 @@ export function withCliFixture<A, E>(
       // Tail buffer so timeout failures can include stderr context. The fork
       // also keeps the OS pipe buffer from filling and wedging the child.
       const stderrChunks: string[] = []
-      yield* forkStderrDrain(proc.stderr, stderrChunks)
+      const stderrFiber = yield* forkStderrDrain(proc.stderr, stderrChunks)
 
       // Watch stdout line-by-line for the listening sentinel. Format
       // (see src/cli/cmd/serve.ts):
       //   "opencode server listening on http://<host>:<port>"
       const readyRe = /listening on (http:\/\/([^\s:]+):(\d+))/
       const readyDeferred = yield* Deferred.make<{ url: string; hostname: string; port: number }>()
-      yield* Effect.forkScoped(
+      const stdoutLines: string[] = []
+      const stdoutFiber = yield* Effect.forkScoped(
         fromBunStream("stdout", () => proc.stdout).pipe(
           Stream.decodeText(),
           Stream.splitLines,
           Stream.runForEach((line) => {
+            stdoutLines.push(line)
             const m = line.match(readyRe)
             return m ? Deferred.succeed(readyDeferred, { url: m[1], hostname: m[2], port: Number(m[3]) }) : Effect.void
           }),
@@ -382,6 +387,17 @@ export function withCliFixture<A, E>(
           proc.kill()
         },
         exited: proc.exited as Promise<number>,
+        result: Effect.gen(function* () {
+          const exitCode = yield* Effect.promise(() => proc.exited)
+          yield* Fiber.join(stdoutFiber)
+          yield* Fiber.join(stderrFiber)
+          return {
+            exitCode,
+            stdout: normalizeLines(stdoutLines.join("\n")),
+            stderr: normalizeLines(stderrChunks.join("")),
+            durationMs: Date.now() - start,
+          }
+        }),
       } satisfies ServeHandle
     })
 
@@ -395,7 +411,7 @@ export function withCliFixture<A, E>(
       // Either way we await proc.exited so the test scope doesn't leak.
       const proc = yield* Effect.acquireRelease(
         Effect.sync(() =>
-          Bun.spawn(["bun", "run", "--conditions=browser", cliEntry, ...argv], {
+          Bun.spawn([executable, ...executableArgs, ...argv], {
             cwd: opts?.cwd ?? home,
             env: { ...process.env, ...env, ...opts?.env },
             stdin: "pipe",
@@ -521,15 +537,17 @@ export const cliIt = {
     name: string,
     body: (input: CliFixture) => Effect.Effect<A, E, Scope.Scope | HttpClient.HttpClient>,
     opts?: number | TestOptions,
-  ) => it.live(name, () => withCliFixture(body), opts),
+    fixtureOpts?: CliFixtureOptions,
+  ) => it.live(name, () => withCliFixture(body, fixtureOpts), opts),
   concurrent: <A, E>(
     name: string,
     body: (input: CliFixture) => Effect.Effect<A, E, Scope.Scope | HttpClient.HttpClient>,
     opts?: number | TestOptions,
+    fixtureOpts?: CliFixtureOptions,
   ) =>
     (process.platform === "win32" ? test : test.concurrent)(
       name,
-      () => Effect.runPromise(Effect.scoped(withCliFixture(body))),
+      () => Effect.runPromise(Effect.scoped(withCliFixture(body, fixtureOpts))),
       opts,
     ),
 }
