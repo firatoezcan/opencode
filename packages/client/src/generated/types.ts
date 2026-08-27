@@ -1631,6 +1631,45 @@ export type SessionsEventsOutput =
       readonly location?: { readonly directory: string; readonly workspaceID?: string }
       readonly data: { readonly timestamp: number; readonly sessionID: string; readonly messageID: string }
     }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "question.v2.asked"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly id: string
+        readonly sessionID: string
+        readonly questions: ReadonlyArray<{
+          readonly question: string
+          readonly header: string
+          readonly options: ReadonlyArray<{ readonly label: string; readonly description: string }>
+          readonly multiple?: boolean
+          readonly custom?: boolean
+        }>
+        readonly tool?: { readonly messageID: string; readonly callID: string }
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "question.v2.replied"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly sessionID: string
+        readonly requestID: string
+        readonly answers: ReadonlyArray<ReadonlyArray<string>>
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "question.v2.rejected"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: { readonly sessionID: string; readonly requestID: string }
+    }
 
 export type SessionsInterruptInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
 

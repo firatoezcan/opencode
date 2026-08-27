@@ -20,7 +20,6 @@ import { Agent } from "@opencode-ai/schema/agent"
 import { Model } from "@opencode-ai/schema/model"
 import { Location } from "@opencode-ai/schema/location"
 import { Revert } from "@opencode-ai/schema/revert"
-import { SessionEvent } from "@opencode-ai/schema/session-event"
 import { SessionDurable } from "@opencode-ai/schema/durable-event-manifest"
 
 const SessionsQueryFields = {
@@ -345,7 +344,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
         query: {
           after: Schema.NumberFromString.pipe(Schema.decodeTo(NonNegativeInt), Schema.optional),
         },
-        success: HttpApiSchema.StreamSse({ data: SessionEvent.Durable }),
+        success: HttpApiSchema.StreamSse({ data: SessionDurable.schema }),
         error: SessionNotFoundError,
       })
         .middleware(sessionLocationMiddleware)
