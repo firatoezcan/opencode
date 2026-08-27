@@ -11,6 +11,7 @@ import { EventTable } from "@opencode-ai/core/event/sql"
 import { Location } from "@opencode-ai/core/location"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProjectV2 } from "@opencode-ai/core/project"
+import { QuestionV2 } from "@opencode-ai/core/question"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -204,6 +205,39 @@ describe("SessionV2.create", () => {
       ).toMatchObject([
         { durable: { seq: 1 }, type: "session.next.prompt.admitted", data: { prompt: { text: "Hello" } } },
         { durable: { seq: 2 }, type: "session.next.prompted" },
+      ])
+    }),
+  )
+
+  it.effect("streams durable question events from the Session boundary", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      const created = yield* session.create({ location })
+      const request: QuestionV2.Request = {
+        id: QuestionV2.ID.ascending("que_session_stream"),
+        sessionID: created.id,
+        questions: [
+          {
+            question: "Continue?",
+            header: "Continue",
+            options: [{ label: "Yes", description: "Continue the Session" }],
+          },
+        ],
+      }
+
+      yield* events.publish(QuestionV2.Event.Asked, request, { location })
+      yield* session.switchAgent({ sessionID: created.id, agent: "plan" })
+
+      const streamed = Array.from(
+        yield* session.events({ sessionID: created.id }).pipe(Stream.take(1), Stream.runCollect),
+      )
+      const history = yield* session.history({ sessionID: created.id, limit: 10 })
+
+      expect(streamed).toMatchObject([{ type: QuestionV2.Event.Asked.type, data: request }])
+      expect(history.events.map((event) => event.type)).toEqual([
+        QuestionV2.Event.Asked.type,
+        SessionEvent.AgentSwitched.type,
       ])
     }),
   )

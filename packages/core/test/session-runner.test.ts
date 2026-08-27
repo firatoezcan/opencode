@@ -3172,6 +3172,100 @@ describe("SessionRunnerLLM", () => {
         { type: "user", text: "Fail durably" },
         { type: "assistant", finish: "error", error: { type: "unknown", message: "Provider unavailable" } },
       ])
+      const retries = yield* (yield* Database.Service).db
+        .select()
+        .from(EventTable)
+        .where(eq(EventTable.type, EventV2.versionedType(SessionEvent.Retried.type, 1)))
+        .all()
+        .pipe(Effect.orDie)
+      expect(retries).toEqual([])
+    }),
+  )
+
+  it.live("continues a recovered question reply without new prompt input", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Ask before restart" }),
+        resume: false,
+      })
+      yield* SessionInput.promoteSteers((yield* Database.Service).db, events, sessionID, Number.MAX_SAFE_INTEGER)
+      const assistantMessageID = SessionMessage.ID.make("msg_recovered_question")
+      const callID = "call_recovered_question"
+      const request: QuestionV2.Request = {
+        id: QuestionV2.ID.ascending("que_recovered_question"),
+        sessionID,
+        questions: [
+          {
+            question: "Which option?",
+            header: "Option",
+            options: [{ label: "One", description: "First option" }],
+          },
+        ],
+        tool: { messageID: assistantMessageID, callID },
+      }
+      yield* events.publish(SessionEvent.Step.Started, {
+        sessionID,
+        assistantMessageID,
+        timestamp: yield* DateTime.now,
+        agent: "build",
+        model: { id: ModelV2.ID.make("fake-model"), providerID: ProviderV2.ID.make("fake") },
+      })
+      yield* events.publish(SessionEvent.Tool.Input.Started, {
+        sessionID,
+        timestamp: yield* DateTime.now,
+        assistantMessageID,
+        callID,
+        name: "question",
+      })
+      yield* events.publish(SessionEvent.Tool.Input.Ended, {
+        sessionID,
+        timestamp: yield* DateTime.now,
+        assistantMessageID,
+        callID,
+        text: JSON.stringify({ questions: request.questions }),
+      })
+      yield* events.publish(SessionEvent.Tool.Called, {
+        sessionID,
+        timestamp: yield* DateTime.now,
+        assistantMessageID,
+        callID,
+        tool: "question",
+        input: { questions: request.questions },
+        provider: { executed: false },
+      })
+      yield* events.publish(QuestionV2.Event.Asked, request, {
+        location: Location.Ref.make({ directory: AbsolutePath.make("/project") }),
+      })
+      yield* events.publish(QuestionV2.Event.Replied, {
+        sessionID,
+        requestID: request.id,
+        answers: [["One"]],
+      })
+      requests.length = 0
+      response = fragmentFixture("text", "text-after-question", ["Continuing"]).completeEvents
+      const completed = yield* events
+        .subscribe(SessionEvent.Step.Ended)
+        .pipe(Stream.take(1), Stream.runDrain, Effect.forkScoped)
+
+      yield* session.wake(sessionID)
+      yield* Fiber.join(completed).pipe(
+        Effect.timeoutOrElse({
+          duration: "1 second",
+          orElse: () => Effect.fail(new Error("recovered question did not continue the Session")),
+        }),
+      )
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Ask before restart" },
+        { type: "assistant", content: [{ type: "tool", id: callID, state: { status: "completed" } }] },
+        { type: "assistant", content: [{ type: "text", text: "Continuing" }] },
+      ])
     }),
   )
 

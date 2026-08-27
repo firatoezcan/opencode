@@ -1,8 +1,12 @@
 import { describe, expect } from "bun:test"
-import { Context, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
+import { Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
+import path from "path"
+import { asc, eq } from "drizzle-orm"
+import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { EventV2 } from "@opencode-ai/core/event"
+import { EventTable } from "@opencode-ai/core/event/sql"
 import { Location } from "@opencode-ai/core/location"
 import { QuestionV2 } from "@opencode-ai/core/question"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -11,6 +15,7 @@ import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
+import { tmpdir } from "./fixture/tmpdir"
 
 const questions = AppNodeBuilder.build(
   LayerNode.group([EventV2.node, QuestionV2.node, QuestionV2.pendingRequestsNode]),
@@ -157,6 +162,98 @@ describe("QuestionV2", () => {
         ],
         provider: { executed: false },
       })
+    }),
+  )
+
+  it.live("rebuilds a durable reply without settling it outside Session execution", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const filename = path.join(tmp.path, "questions.sqlite")
+      const persistentQuestions = () =>
+        AppNodeBuilder.build(
+          LayerNode.group([Database.node, EventV2.node, QuestionV2.node, QuestionV2.pendingRequestsNode]),
+          [
+            [Database.node, Database.layerFromPath(filename)],
+            [
+              Location.node,
+              Layer.succeed(
+                Location.Service,
+                Location.Service.of(location({ directory: AbsolutePath.make("/workspace") })),
+              ),
+            ],
+          ],
+        )
+      const request: QuestionV2.Request = {
+        id: QuestionV2.ID.ascending("que_restart_recovery"),
+        sessionID,
+        questions: [question],
+        tool: { messageID: SessionMessage.ID.make("msg_restart_recovery"), callID: "call_restart_recovery" },
+      }
+
+      yield* Effect.gen(function* () {
+        const context = yield* Layer.build(Layer.fresh(persistentQuestions()))
+        const events = Context.get(context, EventV2.Service)
+        yield* events.publish(QuestionV2.Event.Asked, request, {
+          location: Location.Ref.make({ directory: AbsolutePath.make("/workspace") }),
+        })
+        yield* events.publish(QuestionV2.Event.Replied, {
+          sessionID,
+          requestID: request.id,
+          answers: [["One"]],
+        })
+      }).pipe(Effect.scoped)
+
+      const types = yield* Effect.gen(function* () {
+        const context = yield* Layer.build(Layer.fresh(persistentQuestions()))
+        const { db } = Context.get(context, Database.Service)
+        return yield* db
+          .select({ type: EventTable.type })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, sessionID))
+          .orderBy(asc(EventTable.seq))
+          .all()
+          .pipe(Effect.orDie)
+      }).pipe(Effect.scoped)
+
+      expect(types.map((event) => event.type)).toEqual([
+        EventV2.versionedType(QuestionV2.Event.Asked.type, 1),
+        EventV2.versionedType(QuestionV2.Event.Replied.type, 1),
+      ])
+    }),
+  )
+
+  it.effect("removes a pending question when its tool fails", () =>
+    Effect.gen(function* () {
+      const service = yield* QuestionV2.Service
+      const events = yield* EventV2.Service
+      const tool = { messageID: SessionMessage.ID.make("msg_failed_question"), callID: "call_failed_question" }
+      const request: QuestionV2.Request = {
+        id: QuestionV2.ID.ascending("que_failed_tool"),
+        sessionID,
+        questions: [question],
+        tool,
+      }
+      yield* events.publish(QuestionV2.Event.Asked, request, {
+        location: Location.Ref.make({ directory: AbsolutePath.make("/workspace") }),
+      })
+
+      expect(yield* service.list()).toEqual([request])
+      yield* events.publish(SessionEvent.Tool.Failed, {
+        timestamp: yield* DateTime.now,
+        sessionID,
+        assistantMessageID: tool.messageID,
+        callID: tool.callID,
+        error: { type: "unknown", message: "Tool execution interrupted" },
+        provider: { executed: false },
+      })
+
+      expect(yield* service.list()).toEqual([])
+      expect(yield* service.reply({ requestID: request.id, answers: [["One"]] }).pipe(Effect.flip)).toEqual(
+        new QuestionV2.NotFoundError({ requestID: request.id }),
+      )
     }),
   )
 
