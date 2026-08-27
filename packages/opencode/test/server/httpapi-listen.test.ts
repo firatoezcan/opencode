@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import net from "node:net"
+import fs from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { Global } from "@opencode-ai/core/global"
+import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { Server } from "../../src/server/server"
 import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { withTimeout } from "../../src/util/timeout"
@@ -14,8 +17,10 @@ const original = {
   OPENCODE_SERVER_USERNAME: Flag.OPENCODE_SERVER_USERNAME,
   envPassword: process.env.OPENCODE_SERVER_PASSWORD,
   envUsername: process.env.OPENCODE_SERVER_USERNAME,
+  envAuthContent: process.env.OPENCODE_AUTH_CONTENT,
 }
 const auth = { username: "opencode", password: "listen-secret" }
+const providerAuthPath = path.join(Global.Path.data, "auth.json")
 const testPty = process.platform === "win32" ? test.skip : test
 
 afterEach(async () => {
@@ -25,16 +30,19 @@ afterEach(async () => {
   else process.env.OPENCODE_SERVER_PASSWORD = original.envPassword
   if (original.envUsername === undefined) delete process.env.OPENCODE_SERVER_USERNAME
   else process.env.OPENCODE_SERVER_USERNAME = original.envUsername
+  if (original.envAuthContent === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+  else process.env.OPENCODE_AUTH_CONTENT = original.envAuthContent
+  await fs.rm(providerAuthPath, { force: true })
   await disposeAllInstances()
   await resetDatabase()
 })
 
-async function startListener() {
+async function startListener(port = 0) {
   Flag.OPENCODE_SERVER_PASSWORD = auth.password
   Flag.OPENCODE_SERVER_USERNAME = auth.username
   process.env.OPENCODE_SERVER_PASSWORD = auth.password
   process.env.OPENCODE_SERVER_USERNAME = auth.username
-  return Server.listen({ hostname: "127.0.0.1", port: 0 })
+  return Server.listen({ hostname: "127.0.0.1", port })
 }
 
 async function startNoAuthListener() {
@@ -47,6 +55,23 @@ async function startNoAuthListener() {
 
 function authorization() {
   return `Basic ${btoa(`${auth.username}:${auth.password}`)}`
+}
+
+async function writeProviderAuth() {
+  await fs.mkdir(path.dirname(providerAuthPath), { recursive: true })
+  await fs.writeFile(providerAuthPath, JSON.stringify({ "opencode-go": { type: "api", key: crypto.randomUUID() } }), {
+    mode: 0o600,
+  })
+}
+
+async function connectedProviders(listener: Awaited<ReturnType<typeof startListener>>, directory: string) {
+  const result = await createOpencodeClient({
+    baseUrl: listener.url.toString(),
+    directory,
+    headers: { Authorization: authorization() },
+  }).provider.list()
+  expect(result.response.status).toBe(200)
+  return result.data?.connected ?? []
 }
 
 function socketURL(listener: Awaited<ReturnType<typeof startListener>>, id: string, dir: string, ticket?: string) {
@@ -376,6 +401,57 @@ describe("HttpApi Server.listen", () => {
       }
     } finally {
       await new Promise<void>((resolve) => blocker.close(() => resolve()))
+    }
+  })
+
+  test("fallback listener retains protected auth owned by an active listener", async () => {
+    if (!(await isPortFree(4096))) return
+    await using tmp = await tmpdir()
+    await writeProviderAuth()
+    const first = await startListener(4096)
+    let fallback: Awaited<ReturnType<typeof startListener>> | undefined
+    try {
+      fallback = await startListener()
+      expect(fallback.port).not.toBe(4096)
+      expect(await connectedProviders(first, tmp.path)).toContain("opencode-go")
+      expect(await connectedProviders(fallback, tmp.path)).toContain("opencode-go")
+      expect(await Bun.file(providerAuthPath).exists()).toBe(false)
+    } finally {
+      if (fallback) await stop(fallback, "timed out cleaning up protected fallback listener").catch(() => undefined)
+      await stop(first, "timed out cleaning up first protected listener").catch(() => undefined)
+    }
+  })
+
+  test("concurrent listeners share one protected provider auth import", async () => {
+    await using tmp = await tmpdir()
+    await writeProviderAuth()
+    const listeners = await Promise.all([startListener(), startListener()])
+    try {
+      const connected = await Promise.all(listeners.map((listener) => connectedProviders(listener, tmp.path)))
+      expect(connected.every((providers) => providers.includes("opencode-go"))).toBe(true)
+      expect(await Bun.file(providerAuthPath).exists()).toBe(false)
+    } finally {
+      await Promise.all(
+        listeners.map((listener) =>
+          stop(listener, "timed out cleaning up concurrent protected listener").catch(() => undefined),
+        ),
+      )
+    }
+  })
+
+  test("uses the live server password for protected provider auth", async () => {
+    await using tmp = await tmpdir()
+    await writeProviderAuth()
+    Flag.OPENCODE_SERVER_PASSWORD = undefined
+    process.env.OPENCODE_SERVER_PASSWORD = auth.password
+    process.env.OPENCODE_SERVER_USERNAME = auth.username
+    const listener = await Server.listen({ hostname: "127.0.0.1", port: 0 })
+    try {
+      expect((await fetch(new URL("/provider", listener.url))).status).toBe(401)
+      expect(await connectedProviders(listener, tmp.path)).toContain("opencode-go")
+      expect(await Bun.file(providerAuthPath).exists()).toBe(false)
+    } finally {
+      await stop(listener, "timed out cleaning up live-password listener").catch(() => undefined)
     }
   })
 

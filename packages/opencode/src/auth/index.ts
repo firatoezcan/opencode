@@ -50,8 +50,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Auth") {}
 
-const layer = Layer.effect(
-  Service,
+const service = (protectedServer?: boolean) =>
   Effect.gen(function* () {
     const fsys = yield* FSUtil.Service
     const decode = Schema.decodeUnknownOption(Info)
@@ -68,7 +67,7 @@ const layer = Layer.effect(
     })
 
     let memory: Record<string, Info> | undefined
-    if (Flag.OPENCODE_SERVER_PASSWORD || process.env.OPENCODE_AUTH_CONTENT !== undefined) {
+    if (protectedServer ?? Boolean(Flag.OPENCODE_SERVER_PASSWORD || process.env.OPENCODE_AUTH_CONTENT !== undefined)) {
       memory = yield* read()
       delete process.env.OPENCODE_AUTH_CONTENT
       delete process.env.OPENCODE_SERVER_PASSWORD
@@ -110,9 +109,12 @@ const layer = Layer.effect(
     })
 
     return Service.of({ get, all, set, remove })
-  }),
-)
+  })
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [FSUtil.node] })
+const serviceLayer = (protectedServer?: boolean) => Layer.effect(Service, service(protectedServer))
+
+export const node = LayerNode.make({ service: Service, layer: serviceLayer(), deps: [FSUtil.node] })
+export const protectedNode = LayerNode.make({ service: Service, layer: serviceLayer(true), deps: [FSUtil.node] })
+export const unprotectedNode = LayerNode.make({ service: Service, layer: serviceLayer(false), deps: [FSUtil.node] })
 
 export * as Auth from "."
