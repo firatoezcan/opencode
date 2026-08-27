@@ -5,14 +5,17 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
+import { ModelV2 } from "@opencode-ai/core/model"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { testEffect } from "./lib/effect"
 
 const projects = Layer.succeed(
@@ -83,6 +86,39 @@ describe("SessionV2.history", () => {
     }),
   )
 
+  it.effect("returns synchronized Session lifecycle events without sequence gaps", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      const created = yield* session.create({ location })
+      yield* session.switchAgent({ sessionID: created.id, agent: "build" })
+      yield* events.publish(SessionV1.Event.Updated, {
+        sessionID: created.id,
+        info: SessionV1.SessionInfo.make({
+          id: created.id,
+          slug: "synchronized",
+          version: "test",
+          projectID: created.projectID,
+          directory: created.location.directory,
+          title: created.title,
+          time: { created: 0, updated: 1 },
+        }),
+      })
+      yield* session.switchModel({
+        sessionID: created.id,
+        model: ModelV2.Ref.make({ id: ModelV2.ID.make("sonnet"), providerID: ProviderV2.ID.anthropic }),
+      })
+
+      const page = yield* session.history({ sessionID: created.id, after: 1, limit: 10 })
+
+      expect(page.events.map((event) => [event.durable?.seq, event.type])).toEqual([
+        [2, SessionV1.Event.Updated.type],
+        [3, "session.next.model.switched"],
+      ])
+      expect(page.hasMore).toBe(false)
+    }),
+  )
+
   it.effect("paginates public events in aggregate order across filtered gaps without duplicates", () =>
     Effect.gen(function* () {
       const session = yield* SessionV2.Service
@@ -104,7 +140,7 @@ describe("SessionV2.history", () => {
 
       expect(first.hasMore).toBe(true)
       expect(second.hasMore).toBe(false)
-      expect(sequence).toEqual([1, 3, 4])
+      expect(sequence).toEqual([0, 1, 3, 4])
       expect(new Set(sequence).size).toBe(sequence.length)
     }),
   )
@@ -125,7 +161,7 @@ describe("SessionV2.history", () => {
       })
 
       expect(first.hasMore).toBe(true)
-      expect([...first.events, ...second.events].map((event) => event.durable?.seq)).toEqual([1, 2, 3])
+      expect([...first.events, ...second.events].map((event) => event.durable?.seq)).toEqual([0, 1, 2, 3])
       expect(second.hasMore).toBe(false)
     }),
   )
@@ -137,17 +173,17 @@ describe("SessionV2.history", () => {
       yield* session.switchAgent({ sessionID: created.id, agent: "one" })
       yield* session.switchAgent({ sessionID: created.id, agent: "two" })
 
-      const exact = yield* session.history({ sessionID: created.id, limit: 2 })
-      const oneMore = yield* session.history({ sessionID: created.id, limit: 1 })
+      const exact = yield* session.history({ sessionID: created.id, limit: 3 })
+      const oneMore = yield* session.history({ sessionID: created.id, limit: 2 })
       const exhausted = yield* session.history({
         sessionID: created.id,
         after: oneMore.events.at(-1)?.durable?.seq,
         limit: 1,
       })
 
-      expect(exact.events).toHaveLength(2)
+      expect(exact.events).toHaveLength(3)
       expect(exact.hasMore).toBe(false)
-      expect(oneMore.events).toHaveLength(1)
+      expect(oneMore.events).toHaveLength(2)
       expect(oneMore.hasMore).toBe(true)
       expect(exhausted.events).toHaveLength(1)
       expect(exhausted.hasMore).toBe(false)
