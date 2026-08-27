@@ -1,5 +1,3 @@
-export * as BuildTarget from "./target"
-
 export interface Target {
   readonly os: string
   readonly arch: "arm64" | "x64"

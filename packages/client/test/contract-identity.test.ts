@@ -44,6 +44,23 @@ test("client and Server contracts generate identically", () => {
   expect(emitPromise(client)).toEqual(emitPromise(server))
 })
 
+test("checked-in Promise client is self-contained for external consumers", async () => {
+  const files = await Promise.all(
+    ["client-error.ts", "client.ts", "index.ts", "schema.ts", "types.ts"].map((name) =>
+      Bun.file(new URL(`../src/generated/${name}`, import.meta.url)).text(),
+    ),
+  )
+  const types = files.at(-1) ?? ""
+
+  expect(files.join("\n")).not.toContain('from "@opencode-ai/')
+  expect(types).toContain("export type LocationReloadInput")
+  expect(types).toContain("export type ReviewsDiffInput")
+  expect(types).toContain("export type SessionsResumeInput")
+  expect(types).toContain("export type SessionsSetTitleInput")
+  expect(types).toContain('readonly type: "session.next.step.ended"')
+  expect(types).toContain('readonly type: "question.v2.asked"')
+})
+
 test("generated Promise client decodes native events at its public boundary", async () => {
   const path = new URL("../src/generated/schema.ts", import.meta.url).pathname
   expect(await Bun.file(path).exists()).toBeTrue()

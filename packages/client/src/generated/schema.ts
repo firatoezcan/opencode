@@ -2,8 +2,6 @@
 import { Schema } from "effect"
 import type { EventsSubscribeOutput } from "./types"
 
-import type * as Brand from "effect/Brand"
-
 const Location_Ref = Schema.Struct({
   directory: Schema.String.pipe(Schema.brand("AbsolutePath")),
   workspaceID: Schema.optionalKey(Schema.String.check(Schema.isStartsWith("wrk")).pipe(Schema.brand("WorkspaceV2.ID"))),
@@ -454,6 +452,25 @@ const Session_next_agent_switched = Schema.Struct({
     agent: Schema.String,
   }),
 }).annotate({ identifier: "session.next.agent.switched" })
+
+const Session_next_title_updated = Schema.Struct({
+  id: Schema.String.check(Schema.isStartsWith("evt_")).pipe(Schema.brand("Event.ID")),
+  metadata: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  type: Schema.Literal("session.next.title.updated"),
+  durable: Schema.optionalKey(
+    Schema.Struct({
+      aggregateID: Schema.String,
+      seq: Schema.Number.check(Schema.isInt()),
+      version: Schema.Number.check(Schema.isInt()),
+    }),
+  ),
+  location: Schema.optionalKey(Location_Ref),
+  data: Schema.Struct({
+    timestamp: Schema.Number.check(Schema.isFinite()),
+    sessionID: Schema.String.check(Schema.isStartsWith("ses")).pipe(Schema.brand("SessionID")),
+    title: Schema.String,
+  }),
+}).annotate({ identifier: "session.next.title.updated" })
 
 const Session_next_moved = Schema.Struct({
   id: Schema.String.check(Schema.isStartsWith("evt_")).pipe(Schema.brand("Event.ID")),
@@ -1777,6 +1794,7 @@ const V2Event = Schema.Union([
   Message_part_removed,
   Session_next_agent_switched,
   Session_next_model_switched,
+  Session_next_title_updated,
   Session_next_moved,
   Session_next_prompted,
   Session_next_prompt_admitted,

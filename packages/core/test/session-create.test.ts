@@ -370,6 +370,20 @@ describe("SessionV2.create", () => {
     }),
   )
 
+  it.effect("sets the session title through the durable Session event", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionV2.Service
+      const created = yield* session.create({ location })
+
+      yield* session.setTitle({ sessionID: created.id, title: "Review the generated client" })
+
+      expect(yield* session.get(created.id)).toMatchObject({ title: "Review the generated client" })
+      expect(
+        Array.from(yield* session.events({ sessionID: created.id }).pipe(Stream.take(1), Stream.runCollect)),
+      ).toMatchObject([{ type: "session.next.title.updated", data: { title: "Review the generated client" } }])
+    }),
+  )
+
   it.effect("rejects an agent switch for a missing Session", () =>
     Effect.gen(function* () {
       const session = yield* SessionV2.Service

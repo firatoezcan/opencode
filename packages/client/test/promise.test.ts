@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { isSessionNotFoundError, isUnauthorizedError, OpenCode } from "../src"
+import { isSessionNotFoundError, isUnauthorizedError, isUnknownError, OpenCode } from "../src"
 
 test("exposes every standard HTTP API group", () => {
   const client = OpenCode.make({ baseUrl: "http://localhost:3000" })
@@ -16,6 +16,7 @@ test("exposes every standard HTTP API group", () => {
     "credentials",
     "permissions",
     "files",
+    "reviews",
     "commands",
     "skills",
     "events",
@@ -86,8 +87,25 @@ test("events.subscribe terminates on malformed Promise SSE data", async () => {
 test("session methods use the public HTTP contract", async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = []
   let historyPage = 0
+  let reviewRequest = 0
+  const review = {
+    location: {
+      directory: "/tmp/project",
+      project: { id: "project", directory: "/tmp/project" },
+    },
+    data: [
+      {
+        path: "src/index.ts",
+        status: "modified",
+        additions: 1,
+        deletions: 0,
+        patch: "@@ -1 +1 @@",
+      },
+    ],
+  } as const
   const client = OpenCode.make({
     baseUrl: "http://localhost:3000",
+    headers: { authorization: "Bearer test" },
     fetch: async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
       requests.push({ url, init })
@@ -103,11 +121,17 @@ test("session methods use the public HTTP contract", async () => {
         )
       }
       if (url.includes("/prompt")) return Response.json(admission)
+      if (url.includes("/api/review/diff")) {
+        reviewRequest++
+        return reviewRequest === 1
+          ? Response.json(review)
+          : Response.json({ _tag: "UnknownError", message: "Review failed", ref: "review_test" }, { status: 500 })
+      }
       if (url.includes("/context")) return Response.json({ data: [] })
       if (url.includes("/message/")) return Response.json({ data: modelSwitchedMessage })
       if (url.endsWith("/api/session/active")) return Response.json({ data: { ses_test: { type: "running" } } })
       if (init?.method === "POST" && url.endsWith("/api/session")) return Response.json(session)
-      if (init?.method === "POST") return new Response(null, { status: 204 })
+      if (init?.method === "POST" || init?.method === "PATCH") return new Response(null, { status: 204 })
       return Response.json({ data: [session.data], cursor: { next: "next" } })
     },
   })
@@ -137,6 +161,13 @@ test("session methods use the public HTTP contract", async () => {
   for await (const event of client.sessions.events({ sessionID: "ses_test", after: 0 })) events.push(event)
   await client.sessions.interrupt({ sessionID: "ses_test" })
   const message = await client.sessions.message({ sessionID: "ses_test", messageID: "msg_model" })
+  const reloaded = await client.location.reload({ location: { directory: "/tmp/project" } })
+  const titled = await client.sessions.setTitle({ sessionID: "ses_test", title: "Updated title" })
+  const resumed = await client.sessions.resume({ sessionID: "ses_test" })
+  const reviewResult = await client.reviews.diff({ location: { directory: "/tmp/project" }, context: 2 })
+  const reviewError = await client.reviews
+    .diff({ location: { directory: "/tmp/project" } })
+    .catch((error: unknown) => error)
 
   expect(page.cursor.next).toBe("next")
   expect(active).toEqual({ ses_test: { type: "running" } })
@@ -147,6 +178,12 @@ test("session methods use the public HTTP contract", async () => {
   expect(historyNext).toEqual({ data: [], hasMore: false })
   expect(events).toEqual([modelSwitchedEvent])
   expect(message).toEqual(modelSwitchedMessage)
+  expect([reloaded, titled, resumed]).toEqual([undefined, undefined, undefined])
+  expect(reviewResult).toEqual(review)
+  expect(isUnknownError(reviewError)).toBe(true)
+  expect(requests.every((request) => new Headers(request.init?.headers).get("authorization") === "Bearer test")).toBe(
+    true,
+  )
   expect(requests.map((request) => [request.init?.method, request.url])).toEqual([
     ["GET", "http://localhost:3000/api/session?limit=10&order=desc"],
     ["GET", "http://localhost:3000/api/session/active"],
@@ -162,13 +199,21 @@ test("session methods use the public HTTP contract", async () => {
     ["GET", "http://localhost:3000/api/session/ses_test/event?after=0"],
     ["POST", "http://localhost:3000/api/session/ses_test/interrupt"],
     ["GET", "http://localhost:3000/api/session/ses_test/message/msg_model"],
+    ["POST", "http://localhost:3000/api/location/reload?location%5Bdirectory%5D=%2Ftmp%2Fproject"],
+    ["PATCH", "http://localhost:3000/api/session/ses_test/title"],
+    ["POST", "http://localhost:3000/api/session/ses_test/resume"],
+    ["GET", "http://localhost:3000/api/review/diff?location%5Bdirectory%5D=%2Ftmp%2Fproject&context=2"],
+    ["GET", "http://localhost:3000/api/review/diff?location%5Bdirectory%5D=%2Ftmp%2Fproject"],
   ])
-  const body = requests.find((request) => request.url.endsWith("/api/session/ses_test/prompt"))?.init?.body
-  if (typeof body !== "string") throw new Error("Expected JSON request body")
-  expect(JSON.parse(body)).toEqual({
+  const promptBody = requests.find((request) => request.url.endsWith("/api/session/ses_test/prompt"))?.init?.body
+  if (typeof promptBody !== "string") throw new Error("Expected JSON request body")
+  expect(JSON.parse(promptBody)).toEqual({
     prompt: { text: "Hello" },
     resume: false,
   })
+  const titleBody = requests.find((request) => request.url.endsWith("/api/session/ses_test/title"))?.init?.body
+  if (typeof titleBody !== "string") throw new Error("Expected title request body")
+  expect(JSON.parse(titleBody)).toEqual({ title: "Updated title" })
 })
 
 test("middleware errors remain declared client errors", async () => {

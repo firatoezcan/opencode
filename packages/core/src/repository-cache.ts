@@ -199,7 +199,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | Git.Service | EffectFl
                   // Checking out the tracked ref before resetting keeps the
                   // checkout self-healing even if it was left on another
                   // branch.
-                  const branch = input.branch ?? (yield* git.history.defaultRemoteBranch(existing))
+                  const branch = input.branch ?? (yield* git.history.defaultBranch(existing))?.name
                   if (branch) {
                     yield* git.sync
                       .checkoutRemoteBranch(existing, { branch })

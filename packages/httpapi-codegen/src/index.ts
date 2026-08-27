@@ -1191,8 +1191,12 @@ function renderSchemas(slots: ReadonlyArray<Slot>) {
   const document = SchemaRepresentation.toCodeDocument(
     SchemaRepresentation.fromASTs([first.schema.ast, ...rest.map((slot) => slot.schema.ast)]),
   )
+  const hasRecursiveTypes = Object.keys(document.references.recursives).length > 0
   const artifacts = document.artifacts.flatMap((artifact) => {
-    if (artifact._tag === "Import") return [artifact.importDeclaration]
+    if (artifact._tag === "Import") {
+      if (!hasRecursiveTypes && artifact.importDeclaration.startsWith("import type ")) return []
+      return [artifact.importDeclaration]
+    }
     if (artifact._tag === "Enum") return [artifact.generation.runtime]
     return [`const ${artifact.identifier} = ${artifact.generation.runtime}`]
   })

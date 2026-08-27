@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { BuildTarget } from "../../script/target"
+import * as BuildTarget from "../../script/target"
 
 describe("build target selection", () => {
   test("selects one baseline artifact for an x86_64 Nix build", () => {
