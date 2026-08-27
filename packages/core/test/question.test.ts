@@ -118,15 +118,17 @@ describe("QuestionV2", () => {
     }),
   )
 
-  it.effect("settles a replayed pending question through the original tool call", () =>
+  it.effect("retains a replayed reply for Session recovery", () =>
     Effect.gen(function* () {
       const service = yield* QuestionV2.Service
       const events = yield* EventV2.Service
+      const pending = yield* QuestionV2.PendingRequests
+      const tool = { messageID: SessionMessage.ID.make("msg_recovered"), callID: "call_recovered" }
       const request: QuestionV2.Request = {
         id: QuestionV2.ID.ascending(),
         sessionID,
         questions: [question],
-        tool: { messageID: SessionMessage.ID.make("msg_recovered"), callID: "call_recovered" },
+        tool,
       }
       const published: EventV2.Payload[] = []
       const unsubscribe = yield* events.listen((event) =>
@@ -144,24 +146,10 @@ describe("QuestionV2", () => {
       expect(yield* service.reply({ requestID: request.id, answers: [["One"]] })).toBe("recovered")
 
       expect(yield* service.list()).toEqual([])
-      expect(published.map((event) => event.type)).toEqual([
-        QuestionV2.Event.Asked.type,
-        QuestionV2.Event.Replied.type,
-        SessionEvent.Tool.Success.type,
+      expect(published.map((event) => event.type)).toEqual([QuestionV2.Event.Asked.type, QuestionV2.Event.Replied.type])
+      expect(yield* pending.recoveries(sessionID)).toEqual([
+        { request: { ...request, tool }, answers: [["One"]], settled: false },
       ])
-      expect(published.at(-1)?.data).toMatchObject({
-        sessionID,
-        assistantMessageID: "msg_recovered",
-        callID: "call_recovered",
-        structured: { answers: [["One"]] },
-        content: [
-          {
-            type: "text",
-            text: 'User has answered your questions: "Which option?"="One". You can now continue with the user\'s answers in mind.',
-          },
-        ],
-        provider: { executed: false },
-      })
     }),
   )
 
@@ -206,22 +194,25 @@ describe("QuestionV2", () => {
         })
       }).pipe(Effect.scoped)
 
-      const types = yield* Effect.gen(function* () {
+      const recovered = yield* Effect.gen(function* () {
         const context = yield* Layer.build(Layer.fresh(persistentQuestions()))
         const { db } = Context.get(context, Database.Service)
-        return yield* db
+        const pending = Context.get(context, QuestionV2.PendingRequests)
+        const types = yield* db
           .select({ type: EventTable.type })
           .from(EventTable)
           .where(eq(EventTable.aggregate_id, sessionID))
           .orderBy(asc(EventTable.seq))
           .all()
           .pipe(Effect.orDie)
+        return { types, sessions: Array.from(yield* pending.recoverable) }
       }).pipe(Effect.scoped)
 
-      expect(types.map((event) => event.type)).toEqual([
+      expect(recovered.types.map((event) => event.type)).toEqual([
         EventV2.versionedType(QuestionV2.Event.Asked.type, 1),
         EventV2.versionedType(QuestionV2.Event.Replied.type, 1),
       ])
+      expect(recovered.sessions).toEqual([sessionID])
     }),
   )
 

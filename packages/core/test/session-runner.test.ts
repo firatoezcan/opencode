@@ -258,6 +258,7 @@ const it = testEffect(
       Database.node,
       EventV2.node,
       QuestionV2.node,
+      QuestionV2.pendingRequestsNode,
       SessionProjector.node,
       SessionStore.node,
       ApplicationTools.node,
@@ -3187,6 +3188,7 @@ describe("SessionRunnerLLM", () => {
       yield* setup
       const session = yield* SessionV2.Service
       const events = yield* EventV2.Service
+      const pendingQuestions = yield* QuestionV2.PendingRequests
       yield* session.prompt({
         sessionID,
         prompt: Prompt.make({ text: "Ask before restart" }),
@@ -3263,9 +3265,13 @@ describe("SessionRunnerLLM", () => {
       expect(requests[0]?.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Ask before restart" },
-        { type: "assistant", content: [{ type: "tool", id: callID, state: { status: "completed" } }] },
+        {
+          type: "assistant",
+          content: [{ type: "tool", id: callID, state: { status: "completed", structured: { answers: [["One"]] } } }],
+        },
         { type: "assistant", content: [{ type: "text", text: "Continuing" }] },
       ])
+      expect(yield* pendingQuestions.recoveries(sessionID)).toEqual([])
     }),
   )
 

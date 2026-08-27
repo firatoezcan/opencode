@@ -76,15 +76,9 @@ export function select(input: Selection): ReadonlyArray<Target> {
   if (!input.single) return all
   return all.filter((item) => {
     if (item.os !== input.platform || item.arch !== input.arch) return false
-
-    // When building for the current platform, prefer a single native binary by default.
-    // Baseline binaries require additional Bun artifacts and can be flaky to download.
-    if (item.avx2 === false) return input.baseline
-
-    // also skip abi-specific builds for the same reason
     if (item.abi !== undefined) return false
-
-    return true
+    if (item.arch !== "x64") return true
+    return input.baseline ? item.avx2 === false : item.avx2 !== false
   })
 }
 

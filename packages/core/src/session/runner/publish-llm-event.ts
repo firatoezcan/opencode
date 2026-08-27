@@ -219,12 +219,13 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
   })
 
   const failProvider = Effect.fnUntraced(function* (failure: ProviderFailure) {
-    yield* events.publish(SessionEvent.Retried, {
-      sessionID: input.sessionID,
-      timestamp: yield* timestamp,
-      attempt: 1,
-      error: failure,
-    })
+    if (failure.isRetryable)
+      yield* events.publish(SessionEvent.Retried, {
+        sessionID: input.sessionID,
+        timestamp: yield* timestamp,
+        attempt: 1,
+        error: failure,
+      })
     yield* failAssistant(failure.message)
   })
 
