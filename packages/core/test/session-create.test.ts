@@ -4,6 +4,7 @@ import fs from "fs/promises"
 import path from "path"
 import { DateTime, Effect, Layer, Stream } from "effect"
 import { Money } from "@opencode-ai/schema/money"
+import { Event } from "@opencode-ai/schema/event"
 import { Shell } from "@opencode-ai/schema/shell"
 import { Agent } from "@opencode-ai/core/agent"
 import { asc, eq } from "drizzle-orm"
@@ -1057,9 +1058,9 @@ describe("SessionTransfer", () => {
         recent: "pending",
       })
 
-      expect((yield* transfer.export({ sessionID: source.id })).messages).toMatchObject([
-        { type: "user", text: "Settled" },
-      ])
+      const exported = yield* transfer.export({ sessionID: source.id })
+      expect(exported.messages).toMatchObject([{ type: "user", text: "Settled" }])
+      expect(exported.sequence).toBe(Event.Seq.make(yield* Bus.latestSequence(db, source.id)))
     }),
   )
 
@@ -1082,6 +1083,7 @@ describe("SessionTransfer", () => {
       yield* transfer.import({
         data: {
           info: { ...template, id: sessionID },
+          sequence: Event.Seq.make(9),
           messages: [
             { id: userID, type: "user", text: "Settled", time: { created: DateTime.makeUnsafe(1) } },
             {
@@ -1147,7 +1149,7 @@ describe("SessionTransfer", () => {
         completedShellID,
         completedCompactionID,
       ])
-      expect(yield* Bus.latestSequence(db, sessionID)).toBe(4)
+      expect(yield* Bus.latestSequence(db, sessionID)).toBe(10)
     }),
   )
 
@@ -1164,6 +1166,7 @@ describe("SessionTransfer", () => {
 
       const imported = yield* transfer.import({
         data: {
+          sequence: Event.Seq.make(17),
           info: {
             ...template,
             id: sessionID,
@@ -1200,8 +1203,9 @@ describe("SessionTransfer", () => {
         { id: sourceMessageID, type: "user", text: "Imported message" },
         { id: errorMessageID, type: "compaction", error: { type: "test_error", message: "Original error" } },
       ])
-      expect(yield* Bus.latestSequence(db, sessionID)).toBe(2)
+      expect(yield* Bus.latestSequence(db, sessionID)).toBe(18)
       const exported = yield* transfer.export({ sessionID })
+      expect(exported.sequence).toBe(Event.Seq.make(18))
       expect(exported.info.time).toMatchObject({ idle: DateTime.makeUnsafe(200), viewed: DateTime.makeUnsafe(150) })
       expect(exported.messages).toEqual(messages)
       const sanitized = yield* transfer.export({ sessionID, sanitize: true })
@@ -1219,7 +1223,7 @@ describe("SessionTransfer", () => {
         "compaction",
         "user",
       ])
-      expect(yield* Bus.latestSequence(db, sessionID)).toBe(4)
+      expect(yield* Bus.latestSequence(db, sessionID)).toBe(20)
     }),
   )
 
@@ -1228,7 +1232,9 @@ describe("SessionTransfer", () => {
       const session = yield* Session.Service
       const transfer = yield* SessionTransfer.Service
       const existing = yield* session.create({ location, title: "Existing" })
-      const exit = yield* Effect.exit(transfer.import({ data: { info: existing, messages: [] }, location }))
+      const exit = yield* Effect.exit(
+        transfer.import({ data: { info: existing, messages: [], sequence: Event.Seq.make(0) }, location }),
+      )
 
       expect(exit._tag).toBe("Failure")
       expect((yield* session.get(existing.id)).title).toBe("Existing")
@@ -1243,6 +1249,7 @@ describe("SessionTransfer", () => {
       const template = yield* session.create({ location })
       const imported = yield* transfer.import({
         data: {
+          sequence: Event.Seq.make(0),
           info: {
             ...template,
             id: Session.ID.create(),

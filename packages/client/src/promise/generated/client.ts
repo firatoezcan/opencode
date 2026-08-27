@@ -501,7 +501,12 @@ export function make(options: ClientOptions) {
           {
             method: "POST",
             path: `/api/session/import`,
-            body: { info: input["info"], messages: input["messages"], location: input["location"] },
+            body: {
+              info: input["info"],
+              messages: input["messages"],
+              sequence: input["sequence"],
+              location: input["location"],
+            },
             successStatus: 200,
             declaredStatuses: [409, 401, 400],
             empty: false,

@@ -130,7 +130,11 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
           return {
             data: yield* transfer
               .import({
-                data: { info: ctx.payload.info, messages: ctx.payload.messages },
+                data: {
+                  info: ctx.payload.info,
+                  messages: ctx.payload.messages,
+                  sequence: ctx.payload.sequence,
+                },
                 location: ctx.payload.location ?? { directory: AbsolutePath.make(process.cwd()) },
               })
               .pipe(

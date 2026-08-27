@@ -12,11 +12,11 @@ import type { Brand } from "effect"
 import type { Model } from "@opencode-ai/schema/model"
 import type { DateTime } from "effect"
 import type { SessionMessage } from "@opencode-ai/schema/session-message"
+import type { Event } from "@opencode-ai/schema/event"
 import type { SessionInbox } from "@opencode-ai/schema/session-inbox"
 import type { PromptInput } from "@opencode-ai/schema/prompt-input"
 import type { AgentAttachment } from "@opencode-ai/schema/prompt"
 import type { Skill } from "@opencode-ai/schema/skill"
-import type { Event } from "@opencode-ai/schema/event"
 import type { InstructionEntry } from "@opencode-ai/schema/instruction-entry"
 import type { Schema } from "effect"
 import type { EventLog } from "@opencode-ai/schema/event-log"
@@ -190,13 +190,18 @@ export type SessionCreateOperation<E = never> = (input?: SessionCreateInput) => 
 export type SessionImportInput = {
   readonly info: Session.Info
   readonly messages: ReadonlyArray<SessionMessage.Info>
+  readonly sequence: Event.Seq
   readonly location?: Location.Ref | undefined
 }
 export type SessionImportOutput = Session.Info
 export type SessionImportOperation<E = never> = (input: SessionImportInput) => Effect.Effect<SessionImportOutput, E>
 
 export type SessionExportInput = { readonly sessionID: Session.ID; readonly sanitize?: boolean | undefined }
-export type SessionExportOutput = { readonly info: Session.Info; readonly messages: ReadonlyArray<SessionMessage.Info> }
+export type SessionExportOutput = {
+  readonly info: Session.Info
+  readonly messages: ReadonlyArray<SessionMessage.Info>
+  readonly sequence: Event.Seq
+}
 export type SessionExportOperation<E = never> = (input: SessionExportInput) => Effect.Effect<SessionExportOutput, E>
 
 export type SessionActiveOutput = { readonly [x: Session.ID]: { readonly type: "running" } }

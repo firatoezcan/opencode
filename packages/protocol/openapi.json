@@ -1005,6 +1005,10 @@
                       "$ref": "#/components/schemas/Session.Message.Info"
                     }
                   },
+                  "sequence": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
                   "location": {
                     "anyOf": [
                       {
@@ -1016,7 +1020,7 @@
                     ]
                   }
                 },
-                "required": ["info", "messages"],
+                "required": ["info", "messages", "sequence"],
                 "additionalProperties": false
               }
             }
@@ -16832,9 +16836,13 @@
             "items": {
               "$ref": "#/components/schemas/Session.Message.Info"
             }
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0
           }
         },
-        "required": ["info", "messages"],
+        "required": ["info", "messages", "sequence"],
         "additionalProperties": false
       },
       "SessionsResponse": {

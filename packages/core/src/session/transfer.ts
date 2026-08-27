@@ -1,6 +1,7 @@
 export * as SessionTransfer from "./transfer.js"
 
 import { SessionTransfer } from "@opencode-ai/schema/session-transfer"
+import { Event } from "@opencode-ai/schema/event"
 import { Tool } from "@opencode-ai/schema/tool"
 import { Skill } from "@opencode-ai/schema/skill"
 import { eq } from "drizzle-orm"
@@ -54,6 +55,7 @@ const layer = Layer.effect(
         const data = {
           info: yield* sessions.get(input.sessionID),
           messages: (yield* sessions.messages({ sessionID: input.sessionID, order: "asc" })).filter(isSettled),
+          sequence: Event.Seq.make(yield* Bus.latestSequence(db, input.sessionID)),
         }
         return input.sanitize ? sanitize(data) : data
       }),
@@ -68,6 +70,7 @@ const layer = Layer.effect(
         if (recorded) return yield* new ImportConflictError({ sessionID })
         const project = yield* projects.resolve(input.location.directory)
         yield* upsertProject(db, project).pipe(Effect.orDie)
+        yield* Bus.reserveSequence(db, sessionID, input.data.sequence)
         const messages = input.data.messages.filter(isSettled).map((message, index) => {
           const encoded = encodeMessage(message)
           const { id: _, type, ...data } = encoded
@@ -98,11 +101,10 @@ const layer = Layer.effect(
             },
             {
               location: input.location,
-              commit: (seq) =>
+              commit: () =>
                 Effect.gen(function* () {
                   if (messages.length > 0) {
                     yield* db.insert(SessionMessageTable).values(messages).run().pipe(Effect.orDie)
-                    yield* Bus.reserveSequence(db, sessionID, seq + messages.length)
                   }
                   yield* db
                     .update(SessionTable)
@@ -170,6 +172,7 @@ function metadata(kind: string, id: string, value: Readonly<Record<string, unkno
 
 function sanitize(data: Data): Data {
   return {
+    sequence: data.sequence,
     info: {
       ...data.info,
       title: data.info.title === undefined ? undefined : redact("session-title", data.info.id, data.info.title),
