@@ -15,6 +15,7 @@ const lock = Semaphore.makeUnsafe(1)
 export type Migration = {
   id: string
   foreignKeys?: boolean
+  runOnBootstrap?: boolean
   up: (tx: Transaction) => Effect.Effect<void, unknown, Global.Service>
 }
 
@@ -38,9 +39,12 @@ export function apply(db: Database) {
             sql`CREATE TABLE ${sql.identifier("migration")} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`,
           )
           yield* Effect.forEach(migrations, (migration) =>
-            tx.run(
-              sql`INSERT INTO ${sql.identifier("migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`,
-            ),
+            Effect.gen(function* () {
+              if (migration.runOnBootstrap) yield* migration.up(tx)
+              yield* tx.run(
+                sql`INSERT INTO ${sql.identifier("migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`,
+              )
+            }),
           )
         }),
       )

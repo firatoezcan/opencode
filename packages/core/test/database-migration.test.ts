@@ -78,6 +78,43 @@ describe("DatabaseMigration", () => {
     )
   })
 
+  test("imports legacy credentials while bootstrapping the current schema", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(
+      path.join(tmp.path, "auth.json"),
+      JSON.stringify({
+        xai: {
+          type: "oauth",
+          refresh: "refresh",
+          access: "access",
+          expires: 123,
+        },
+      }),
+    )
+
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        expect(yield* db.all(sql`SELECT integration_id, label, value FROM credential`)).toEqual([
+          {
+            integration_id: "xai",
+            label: "default",
+            value: JSON.stringify({
+              type: "oauth",
+              methodID: "device",
+              refresh: "refresh",
+              access: "access",
+              expires: 123,
+            }),
+          },
+        ])
+      }),
+      Global.make({ data: tmp.path }),
+    )
+  })
+
   test("adds nullable attention state to existing sessions", async () => {
     await run(
       Effect.gen(function* () {
@@ -325,12 +362,11 @@ describe("DatabaseMigration", () => {
       "https://example.com/": { type: "wellknown", key: "TOKEN", token: "wellknown-key" },
       invalid: { type: "unknown" },
     })
-    await Bun.write(source, content)
-
     await run(
       Effect.gen(function* () {
         const db = yield* makeDb
         yield* DatabaseMigration.apply(db)
+        yield* Effect.promise(() => Bun.write(source, content))
         const now = Date.now()
         yield* db.run(sql`
           INSERT INTO credential (id, integration_id, label, value, time_created, time_updated)
