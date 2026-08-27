@@ -53,7 +53,9 @@ Next reviewed slices:
 - add durable/clustered interruption, retries, and stale-owner fencing only as
   their slices become concrete
 
-### Deferred durable continuation recovery
+### Deferred ambiguous continuation recovery
+
+Durable question resolution already has deterministic restart behavior. A recovered reply settles its tool and continues from projected history; a recovered rejection fails its tool and stops without another provider request. The remaining work concerns ambiguous provider dispatch and general continuation recovery.
 
 Do not infer that ambiguous provider work is safe to retry from an advisory wake.
 The first inbox-driven runner intentionally omits outer provider-attempt markers
@@ -64,7 +66,7 @@ Design post-crash continuation recovery as one explicit slice. It should model:
 - promoted input and projected-history state
 - queued-input promotion and steering assignment
 - provider-attempt preparation versus provider-dispatch ambiguity
-- required post-tool continuation across process loss
+- required post-tool continuation across process loss outside deterministic question resolution
 - explicit `retry` and `abandon` decisions for unknown outcomes
 - bounded automatic retry only where provider and tool idempotency make it safe
 - retry budget, backoff, visible recovery status, startup discovery, and future

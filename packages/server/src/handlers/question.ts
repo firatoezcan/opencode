@@ -1,8 +1,9 @@
 import { QuestionV2 } from "@opencode-ai/core/question"
+import { SessionV2 } from "@opencode-ai/core/session"
 import { Effect } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import { Api } from "../api"
-import { QuestionNotFoundError } from "@opencode-ai/protocol/errors"
+import { QuestionNotFoundError, SessionNotFoundError } from "@opencode-ai/protocol/errors"
 import { response } from "../location"
 
 function missingRequest(id: QuestionV2.ID) {
@@ -11,6 +12,7 @@ function missingRequest(id: QuestionV2.ID) {
 
 export const QuestionHandler = HttpApiBuilder.group(Api, "server.question", (handlers) =>
   Effect.gen(function* () {
+    const session = yield* SessionV2.Service
     const withOwnedQuestion = Effect.fnUntraced(function* <A, E>(
       sessionID: QuestionV2.Request["sessionID"],
       requestID: QuestionV2.ID,
@@ -20,6 +22,21 @@ export const QuestionHandler = HttpApiBuilder.group(Api, "server.question", (han
       const request = (yield* question.list()).find((request) => request.id === requestID)
       if (!request || request.sessionID !== sessionID) return yield* missingRequest(requestID)
       return yield* use(question)
+    })
+    const wakeRecovered = Effect.fnUntraced(function* (
+      sessionID: QuestionV2.Request["sessionID"],
+      state: QuestionV2.RecoveryState,
+    ) {
+      if (state === "active") return
+      yield* session.wake(sessionID).pipe(
+        Effect.mapError(
+          () =>
+            new SessionNotFoundError({
+              sessionID,
+              message: `Session not found: ${sessionID}`,
+            }),
+        ),
+      )
     })
 
     return handlers
@@ -39,22 +56,24 @@ export const QuestionHandler = HttpApiBuilder.group(Api, "server.question", (han
       .handle(
         "session.question.reply",
         Effect.fn(function* (ctx) {
-          yield* withOwnedQuestion(ctx.params.sessionID, ctx.params.requestID, (question) =>
+          const state = yield* withOwnedQuestion(ctx.params.sessionID, ctx.params.requestID, (question) =>
             question
               .reply({ requestID: ctx.params.requestID, answers: ctx.payload.answers })
               .pipe(Effect.catchTag("QuestionV2.NotFoundError", () => missingRequest(ctx.params.requestID))),
           )
+          yield* wakeRecovered(ctx.params.sessionID, state)
           return HttpApiSchema.NoContent.make()
         }),
       )
       .handle(
         "session.question.reject",
         Effect.fn(function* (ctx) {
-          yield* withOwnedQuestion(ctx.params.sessionID, ctx.params.requestID, (question) =>
+          const state = yield* withOwnedQuestion(ctx.params.sessionID, ctx.params.requestID, (question) =>
             question
               .reject(ctx.params.requestID)
               .pipe(Effect.catchTag("QuestionV2.NotFoundError", () => missingRequest(ctx.params.requestID))),
           )
+          yield* wakeRecovered(ctx.params.sessionID, state)
           return HttpApiSchema.NoContent.make()
         }),
       )

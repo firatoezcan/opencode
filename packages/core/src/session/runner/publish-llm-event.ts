@@ -43,6 +43,14 @@ type SettledOutput =
   | { readonly structured: Record<string, unknown>; readonly content: ToolOutput["content"] }
   | { readonly error: { readonly type: "unknown"; readonly message: string } }
 
+type ProviderFailure = {
+  readonly message: string
+  readonly statusCode?: number
+  readonly isRetryable: boolean
+  readonly responseHeaders?: Record<string, string>
+  readonly responseBody?: string
+}
+
 const settledOutput = (value: ToolOutput | undefined, result: ToolResultValue): SettledOutput => {
   if (result.type === "error") return { error: { type: "unknown", message: message(result.value) } }
   const settled = value ?? ToolOutput.fromResultValue(result)
@@ -208,6 +216,17 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
       assistantMessageID,
       error: { type: "unknown", message },
     })
+  })
+
+  const failProvider = Effect.fnUntraced(function* (failure: ProviderFailure) {
+    if (failure.isRetryable)
+      yield* events.publish(SessionEvent.Retried, {
+        sessionID: input.sessionID,
+        timestamp: yield* timestamp,
+        attempt: 1,
+        error: failure,
+      })
+    yield* failAssistant(failure.message)
   })
 
   const failUnsettledTools = Effect.fn("SessionRunner.failUnsettledTools")(function* (
@@ -403,7 +422,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
         return
       case "provider-error":
         providerFailed = true
-        yield* failAssistant(event.message)
+        yield* failProvider({ message: event.message, isRetryable: event.retryable === true })
         return
     }
   })
@@ -412,6 +431,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
     publish,
     flush,
     failAssistant,
+    failProvider,
     failUnsettledTools,
     hasActiveAssistant: () => assistantActive,
     hasAssistantStarted: () => assistantMessageID !== undefined,

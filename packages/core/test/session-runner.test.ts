@@ -6,6 +6,7 @@ import {
   Model,
   TransportReason,
   InvalidRequestReason,
+  ProviderInternalReason,
   type LLMClientShape,
   type LLMRequest,
 } from "@opencode-ai/llm"
@@ -257,6 +258,7 @@ const it = testEffect(
       Database.node,
       EventV2.node,
       QuestionV2.node,
+      QuestionV2.pendingRequestsNode,
       SessionProjector.node,
       SessionStore.node,
       ApplicationTools.node,
@@ -392,6 +394,58 @@ const replaySessionProjection = (id: SessionV2.ID) =>
       })),
     )
   })
+
+const recordPendingQuestion = Effect.fn("SessionRunnerTest.recordPendingQuestion")(function* (suffix: string) {
+  const events = yield* EventV2.Service
+  const assistantMessageID = SessionMessage.ID.make(`msg_${suffix}`)
+  const callID = `call_${suffix}`
+  const request = {
+    id: QuestionV2.ID.ascending(`que_${suffix}`),
+    sessionID,
+    questions: [
+      {
+        question: "Which option?",
+        header: "Option",
+        options: [{ label: "One", description: "First option" }],
+      },
+    ],
+    tool: { messageID: assistantMessageID, callID },
+  } satisfies QuestionV2.Request & { readonly tool: QuestionV2.Tool }
+  yield* events.publish(SessionEvent.Step.Started, {
+    sessionID,
+    assistantMessageID,
+    timestamp: yield* DateTime.now,
+    agent: "build",
+    model: { id: ModelV2.ID.make("fake-model"), providerID: ProviderV2.ID.make("fake") },
+  })
+  yield* events.publish(SessionEvent.Tool.Input.Started, {
+    sessionID,
+    timestamp: yield* DateTime.now,
+    assistantMessageID,
+    callID,
+    name: "question",
+  })
+  yield* events.publish(SessionEvent.Tool.Input.Ended, {
+    sessionID,
+    timestamp: yield* DateTime.now,
+    assistantMessageID,
+    callID,
+    text: JSON.stringify({ questions: request.questions }),
+  })
+  yield* events.publish(SessionEvent.Tool.Called, {
+    sessionID,
+    timestamp: yield* DateTime.now,
+    assistantMessageID,
+    callID,
+    tool: "question",
+    input: { questions: request.questions },
+    provider: { executed: false },
+  })
+  yield* events.publish(QuestionV2.Event.Asked, request, {
+    location: Location.Ref.make({ directory: AbsolutePath.make("/project") }),
+  })
+  return request
+})
 
 type FragmentKind = "text" | "reasoning" | "tool input"
 
@@ -3171,6 +3225,122 @@ describe("SessionRunnerLLM", () => {
         { type: "user", text: "Fail durably" },
         { type: "assistant", finish: "error", error: { type: "unknown", message: "Provider unavailable" } },
       ])
+      const retries = yield* (yield* Database.Service).db
+        .select()
+        .from(EventTable)
+        .where(eq(EventTable.type, EventV2.versionedType(SessionEvent.Retried.type, 1)))
+        .all()
+        .pipe(Effect.orDie)
+      expect(retries).toEqual([])
+    }),
+  )
+
+  it.live("continues a recovered question reply without new prompt input", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      const pendingQuestions = yield* QuestionV2.PendingRequests
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Ask before restart" }),
+        resume: false,
+      })
+      yield* SessionInput.promoteSteers((yield* Database.Service).db, events, sessionID, Number.MAX_SAFE_INTEGER)
+      const request = yield* recordPendingQuestion("recovered_question")
+      const callID = request.tool!.callID
+      yield* events.publish(QuestionV2.Event.Replied, {
+        sessionID,
+        requestID: request.id,
+        answers: [["One"]],
+      })
+      requests.length = 0
+      response = fragmentFixture("text", "text-after-question", ["Continuing"]).completeEvents
+      const completed = yield* events
+        .subscribe(SessionEvent.Step.Ended)
+        .pipe(Stream.take(1), Stream.runDrain, Effect.forkScoped)
+
+      yield* session.wake(sessionID)
+      yield* Fiber.join(completed).pipe(
+        Effect.timeoutOrElse({
+          duration: "1 second",
+          orElse: () => Effect.fail(new Error("recovered question did not continue the Session")),
+        }),
+      )
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Ask before restart" },
+        {
+          type: "assistant",
+          content: [{ type: "tool", id: callID, state: { status: "completed", structured: { answers: [["One"]] } } }],
+        },
+        { type: "assistant", content: [{ type: "text", text: "Continuing" }] },
+      ])
+      expect(yield* pendingQuestions.recoveries(sessionID)).toEqual([])
+    }),
+  )
+
+  it.live("fails a recovered question rejection without continuing the provider", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      const pendingQuestions = yield* QuestionV2.PendingRequests
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Reject after restart" }),
+        resume: false,
+      })
+      yield* SessionInput.promoteSteers((yield* Database.Service).db, events, sessionID, Number.MAX_SAFE_INTEGER)
+      const request = yield* recordPendingQuestion("recovered_rejection")
+      const tool = request.tool
+      yield* events.publish(QuestionV2.Event.Rejected, { sessionID, requestID: request.id })
+      expect(yield* pendingQuestions.recoveries(sessionID)).toEqual([{ _tag: "Rejected", request }])
+      requests.length = 0
+      response = fragmentFixture("text", "text-after-rejection", ["Must not continue"]).completeEvents
+
+      yield* session.wake(sessionID)
+      yield* Effect.gen(function* () {
+        while ((yield* pendingQuestions.recoveries(sessionID)).length > 0) yield* Effect.yieldNow
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: "1 second",
+          orElse: () => Effect.fail(new Error("recovered question rejection did not fail its tool")),
+        }),
+      )
+      yield* Effect.gen(function* () {
+        while ((yield* session.active).has(sessionID)) yield* Effect.yieldNow
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: "1 second",
+          orElse: () => Effect.fail(new Error("recovered question rejection continued provider execution")),
+        }),
+      )
+      const failures = yield* (yield* Database.Service).db
+        .select()
+        .from(EventTable)
+        .where(eq(EventTable.type, EventV2.versionedType(SessionEvent.Tool.Failed.type, 1)))
+        .all()
+        .pipe(Effect.orDie)
+
+      expect(requests).toEqual([])
+      expect(failures.some((event) => event.data.callID === tool.callID)).toBe(true)
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Reject after restart" },
+        {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id: tool.callID,
+              state: { status: "error", error: { type: "unknown", message: "Tool execution interrupted" } },
+            },
+          ],
+        },
+      ])
+      expect(yield* pendingQuestions.recoveries(sessionID)).toEqual([])
     }),
   )
 
@@ -3236,6 +3406,36 @@ describe("SessionRunnerLLM", () => {
         { type: "user", text: "Fail raw stream durably" },
         { type: "assistant", finish: "error", error: { type: "unknown", message: "Provider unavailable" } },
       ])
+    }),
+  )
+
+  it.effect("publishes the native retry decision before a retryable provider step failure", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Retry provider durably" }), resume: false })
+      responseStream = Stream.fail(
+        new LLMError({
+          module: "test",
+          method: "stream",
+          reason: new ProviderInternalReason({ message: "Provider unavailable", status: 503 }),
+        }),
+      )
+
+      yield* session.resume(sessionID).pipe(Effect.flip)
+
+      const { db } = yield* Database.Service
+      const [retry] = yield* db
+        .select({ data: EventTable.data })
+        .from(EventTable)
+        .where(eq(EventTable.type, EventV2.versionedType(SessionEvent.Retried.type, 1)))
+        .all()
+        .pipe(Effect.orDie)
+      expect(retry?.data).toMatchObject({
+        sessionID,
+        attempt: 1,
+        error: { message: "Provider unavailable", statusCode: 503, isRetryable: true },
+      })
     }),
   )
 

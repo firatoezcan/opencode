@@ -52,7 +52,8 @@ import { llmClient } from "../../effect/app-node-platform"
  *   - [ ] Mark busy, retrying, idle, interrupted, or terminal-failure status durably.
  *   - [ ] Honor interruption and reject stale work after runtime attachment replacement.
  *   - [x] Honor optional agent step limits.
- *   - [ ] Bound provider retries and repeated identical tool calls.
+ *   - [x] Bound provider retries through the request executor.
+ *   - [ ] Bound repeated identical tool calls.
  *
  * - Runtime context assembly
  *   - Track V1 runtime-context parity canonically in `specs/v2/session.md`.
@@ -83,8 +84,6 @@ import { llmClient } from "../../effect/app-node-platform"
  *   - [ ] Update title, summaries, compaction state, and cleanup in bounded background work.
  *
  * Use `llm.stream(request)` for each provider turn. Keep tool execution and continuation here.
- * Durable continuation recovery remains a separate future slice with an explicit retry policy.
- *
  * The current slice loads V2 history, translates it, resolves a model through a core service, and persists one
  * provider turn. Registry definitions are advertised, local tool calls are settled durably, and an
  * explicit loop starts the next provider turn after local settlement. Configured agent step limits bound the loop.
@@ -99,6 +98,7 @@ const layer = Layer.effect(
     const tools = yield* ToolRegistry.Service
     const models = yield* SessionRunnerModel.Service
     const store = yield* SessionStore.Service
+    const pendingQuestions = yield* QuestionV2.PendingRequests
     const location = yield* Location.Service
     const systemContext = yield* SystemContextRegistry.Service
     const skillGuidance = yield* SkillGuidance.Service
@@ -297,7 +297,17 @@ const layer = Layer.effect(
           const llmFailure = failure instanceof LLMError ? failure : undefined
           if (llmFailure && !publisher.hasProviderError()) {
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
-            yield* withPublication(publisher.failAssistant(llmFailure.reason.message))
+            const http = "http" in llmFailure.reason ? llmFailure.reason.http : undefined
+            yield* withPublication(
+              publisher.failProvider({
+                message: llmFailure.reason.message,
+                statusCode:
+                  http?.response?.status ?? ("status" in llmFailure.reason ? llmFailure.reason.status : undefined),
+                isRetryable: llmFailure.retryable,
+                responseHeaders: http?.response?.headers,
+                responseBody: http?.body,
+              }),
+            )
           }
           if (stream._tag === "Failure" && Cause.hasInterrupts(stream.cause)) yield* FiberSet.clear(toolFibers)
           const settled = yield* restore(awaitToolFibers(toolFibers)).pipe(Effect.exit)
@@ -391,12 +401,41 @@ const layer = Layer.effect(
       readonly sessionID: SessionSchema.ID
       readonly force: boolean
     }) {
+      const recoveredQuestions = yield* pendingQuestions.recoveries(input.sessionID)
+      let continueAfterRecovery = false
+      for (const recovery of recoveredQuestions) {
+        const tool = recovery.request.tool
+        if (recovery._tag === "Rejected") {
+          yield* events.publish(SessionEvent.Tool.Failed, {
+            timestamp: yield* DateTime.now,
+            sessionID: input.sessionID,
+            assistantMessageID: tool.messageID,
+            callID: tool.callID,
+            error: { type: "unknown", message: "Tool execution interrupted" },
+            provider: { executed: false },
+          })
+          continue
+        }
+        continueAfterRecovery = true
+        if (!recovery.settled)
+          yield* events.publish(SessionEvent.Tool.Success, {
+            timestamp: yield* DateTime.now,
+            sessionID: input.sessionID,
+            assistantMessageID: tool.messageID,
+            callID: tool.callID,
+            structured: { answers: recovery.answers.map((answer) => [...answer]) },
+            content: [{ type: "text", text: QuestionV2.toModelOutput(recovery.request.questions, recovery.answers) }],
+            result: { answers: recovery.answers.map((answer) => [...answer]) },
+            provider: { executed: false },
+          })
+      }
       const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
-      if (!input.force && !hasSteer && !hasQueue) return
+      const force = input.force || continueAfterRecovery
+      if (!force && !hasSteer && !hasQueue) return
       yield* failInterruptedTools(input.sessionID)
       let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
-      let shouldRun = input.force || hasSteer || hasQueue
+      let shouldRun = force || hasSteer || hasQueue
       while (shouldRun) {
         let needsContinuation = true
         let step = 1
@@ -428,6 +467,7 @@ export const node = makeLocationNode({
     ToolRegistry.node,
     SessionRunnerModel.node,
     SessionStore.node,
+    QuestionV2.pendingRequestsNode,
     Location.node,
     SystemContextRegistry.node,
     SkillGuidance.node,

@@ -53,7 +53,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     runHook preBuild
 
     cd ./packages/opencode
-    bun --bun ./script/build.ts --single --skip-install
+    bun --bun ./script/build.ts --single${lib.optionalString stdenvNoCC.hostPlatform.isx86_64 " --baseline"} --skip-install
     bun --bun ./script/schema.ts schema.json
 
     runHook postBuild

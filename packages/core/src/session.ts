@@ -36,7 +36,7 @@ import { Snapshot } from "./snapshot"
 import { SessionRevert } from "./session/revert"
 import { Revert } from "@opencode-ai/schema/revert"
 import { FSUtil } from "./fs-util"
-import { SessionDurable } from "@opencode-ai/schema/durable-event-manifest"
+import { SessionDurable, type SessionDurableEvent } from "@opencode-ai/schema/durable-event-manifest"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -133,17 +133,18 @@ export interface Interface {
   readonly events: (input: {
     sessionID: SessionSchema.ID
     after?: number
-  }) => Stream.Stream<SessionEvent.DurableEvent, NotFoundError>
+  }) => Stream.Stream<SessionDurableEvent, NotFoundError>
   readonly history: (input: {
     sessionID: SessionSchema.ID
     after?: number
     limit: number
-  }) => Effect.Effect<{ events: ReadonlyArray<SessionEvent.DurableEvent>; hasMore: boolean }, NotFoundError>
+  }) => Effect.Effect<{ events: ReadonlyArray<SessionDurableEvent>; hasMore: boolean }, NotFoundError>
   readonly switchAgent: (input: { sessionID: SessionSchema.ID; agent: string }) => Effect.Effect<void, NotFoundError>
   readonly switchModel: (input: {
     sessionID: SessionSchema.ID
     model: ModelV2.Ref
   }) => Effect.Effect<void, NotFoundError>
+  readonly setTitle: (input: { sessionID: SessionSchema.ID; title: string }) => Effect.Effect<void, NotFoundError>
   readonly prompt: (input: {
     id?: SessionMessage.ID
     sessionID: SessionSchema.ID
@@ -166,6 +167,7 @@ export interface Interface {
   readonly compact: (input: CompactInput) => Effect.Effect<void, NotFoundError | OperationUnavailableError>
   readonly wait: (id: SessionSchema.ID) => Effect.Effect<void, NotFoundError | OperationUnavailableError>
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
+  readonly wake: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | SessionRunner.RunError>
   readonly interrupt: (sessionID: SessionSchema.ID) => Effect.Effect<void>
   readonly revert: {
@@ -192,7 +194,7 @@ const layer = Layer.effect(
     const store = yield* SessionStore.Service
     const locations = yield* LocationServiceMap.Service
     const decodeMessage = Schema.decodeUnknownEffect(SessionMessage.Message)
-    const isDurableSessionEvent = Schema.is(SessionEvent.Durable)
+    const isDurableSessionEvent = Schema.is(SessionDurable.schema)
     const decode = (row: typeof SessionMessageTable.$inferSelect) =>
       decodeMessage({ ...row.data, id: row.id, type: row.type }).pipe(
         Effect.mapError(
@@ -348,7 +350,7 @@ const layer = Layer.effect(
           result
             .get(input.sessionID)
             .pipe(Effect.as(events.durable({ aggregateID: input.sessionID, after: input.after }))),
-        ).pipe(Stream.filter((event): event is SessionEvent.DurableEvent => isDurableSessionEvent(event))),
+        ).pipe(Stream.filter((event): event is SessionDurableEvent => isDurableSessionEvent(event))),
       history: Effect.fn("V2Session.history")(function* (input) {
         yield* result.get(input.sessionID)
         return yield* EventV2.readAggregate(db, {
@@ -414,6 +416,15 @@ const layer = Layer.effect(
           model: input.model,
         })
       }),
+      setTitle: Effect.fn("V2Session.setTitle")(function* (input) {
+        const session = yield* result.get(input.sessionID)
+        if (session.title === input.title) return
+        yield* events.publish(SessionEvent.TitleUpdated, {
+          sessionID: input.sessionID,
+          timestamp: yield* DateTime.now,
+          title: input.title,
+        })
+      }),
       compact: Effect.fn("V2Session.compact")(function* (input) {
         yield* result.get(input.sessionID)
         return yield* new OperationUnavailableError({ operation: "compact" })
@@ -423,6 +434,10 @@ const layer = Layer.effect(
         return yield* new OperationUnavailableError({ operation: "wait" })
       }),
       active: execution.active,
+      wake: Effect.fn("V2Session.wake")(function* (sessionID) {
+        yield* result.get(sessionID)
+        yield* execution.wake(sessionID)
+      }),
       resume: Effect.fn("V2Session.resume")(function* (sessionID) {
         yield* result.get(sessionID)
         yield* execution.resume(sessionID)

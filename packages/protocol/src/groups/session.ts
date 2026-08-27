@@ -20,7 +20,7 @@ import { Agent } from "@opencode-ai/schema/agent"
 import { Model } from "@opencode-ai/schema/model"
 import { Location } from "@opencode-ai/schema/location"
 import { Revert } from "@opencode-ai/schema/revert"
-import { SessionEvent } from "@opencode-ai/schema/session-event"
+import { SessionDurable } from "@opencode-ai/schema/durable-event-manifest"
 
 const SessionsQueryFields = {
   workspace: Workspace.ID.pipe(Schema.optional),
@@ -166,6 +166,22 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
             identifier: "v2.session.get",
             summary: "Get session",
             description: "Retrieve a session by ID.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.patch("session.setTitle", "/api/session/:sessionID/title", {
+        params: { sessionID: Session.ID },
+        payload: Schema.Struct({ title: Session.Info.fields.title }),
+        success: HttpApiSchema.NoContent,
+        error: SessionNotFoundError,
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.setTitle",
+            summary: "Set session title",
+            description: "Set the title shown for a session.",
           }),
         ),
     )
@@ -323,7 +339,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
         params: { sessionID: Session.ID },
         query: SessionHistoryQuery,
         success: Schema.Struct({
-          data: Schema.Array(SessionEvent.Durable),
+          data: Schema.Array(SessionDurable.schema),
           hasMore: Schema.Boolean,
         }).annotate({ identifier: "SessionHistory" }),
         error: SessionNotFoundError,
@@ -344,7 +360,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
         query: {
           after: Schema.NumberFromString.pipe(Schema.decodeTo(NonNegativeInt), Schema.optional),
         },
-        success: HttpApiSchema.StreamSse({ data: SessionEvent.Durable }),
+        success: HttpApiSchema.StreamSse({ data: SessionDurable.schema }),
         error: SessionNotFoundError,
       })
         .middleware(sessionLocationMiddleware)

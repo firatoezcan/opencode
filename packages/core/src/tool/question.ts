@@ -31,19 +31,6 @@ export const Output = Schema.Struct({
 })
 export type Output = typeof Output.Type
 
-export const toModelOutput = (
-  questions: ReadonlyArray<QuestionV2.Prompt>,
-  answers: ReadonlyArray<QuestionV2.Answer>,
-) => {
-  const formatted = questions
-    .map(
-      (question, index) =>
-        `"${question.question}"="${answers[index]?.length ? answers[index].join(", ") : "Unanswered"}"`,
-    )
-    .join(", ")
-  return `User has answered your questions: ${formatted}. You can now continue with the user's answers in mind.`
-}
-
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
@@ -57,7 +44,7 @@ const layer = Layer.effectDiscard(
           input: Input,
           output: Output,
           toModelOutput: ({ input, output }) => [
-            { type: "text", text: toModelOutput(input.questions, output.answers) },
+            { type: "text", text: QuestionV2.toModelOutput(input.questions, output.answers) },
           ],
           execute: (input, context) =>
             permission

@@ -44,6 +44,56 @@ test("client and Server contracts generate identically", () => {
   expect(emitPromise(client)).toEqual(emitPromise(server))
 })
 
+test("checked-in Promise client is self-contained for external consumers", async () => {
+  const files = await Promise.all(
+    ["client-error.ts", "client.ts", "index.ts", "schema.ts", "types.ts"].map((name) =>
+      Bun.file(new URL(`../src/generated/${name}`, import.meta.url)).text(),
+    ),
+  )
+  const types = files.at(-1) ?? ""
+
+  expect(files.join("\n")).not.toContain('from "@opencode-ai/')
+  expect(types).toContain("export type LocationReloadInput")
+  expect(types).toContain("export type ReviewsDiffInput")
+  expect(types).toContain("export type SessionsResumeInput")
+  expect(types).toContain("export type SessionsSetTitleInput")
+  expect(types).toContain('readonly type: "session.next.step.ended"')
+  expect(types).toContain('readonly type: "question.v2.asked"')
+})
+
+test("generated Promise client decodes native events at its public boundary", async () => {
+  const path = new URL("../src/generated/schema.ts", import.meta.url).pathname
+  expect(await Bun.file(path).exists()).toBeTrue()
+
+  const generated = await import(path)
+  const event = { id: "evt_test", type: "server.connected", data: {} }
+  const question = {
+    id: "evt_question",
+    type: "question.v2.asked",
+    data: {
+      id: "que_test",
+      sessionID: "ses_test",
+      questions: [
+        {
+          question: "Choose a target",
+          header: "Target",
+          options: [{ label: "Current", description: "Use the current target" }],
+        },
+      ],
+    },
+  }
+
+  expect(generated.decodeEventsSubscribeOutput(event)).toEqual(event)
+  expect(generated.decodeEventsSubscribeOutput(question)).toEqual(question)
+  expect(() => generated.decodeEventsSubscribeOutput({ type: "server.connected", data: {} })).toThrow()
+  expect(() =>
+    generated.decodeEventsSubscribeOutput({
+      ...question,
+      data: { ...question.data, questions: [{ question: "Choose a target", options: [] }] },
+    }),
+  ).toThrow()
+})
+
 test("shared DTO schemas construct and decode plain objects", () => {
   const made = Prompt.make({ text: "hello" })
   const decoded = Schema.decodeUnknownSync(Prompt)({ text: "hello" })
