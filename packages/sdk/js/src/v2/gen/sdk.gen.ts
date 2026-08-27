@@ -297,6 +297,8 @@ import type {
   V2IntegrationListResponses,
   V2LocationGetErrors,
   V2LocationGetResponses,
+  V2LocationReloadErrors,
+  V2LocationReloadResponses,
   V2ModelListErrors,
   V2ModelListResponses,
   V2PermissionRequestListErrors,
@@ -333,6 +335,8 @@ import type {
   V2QuestionRequestListResponses,
   V2ReferenceListErrors,
   V2ReferenceListResponses,
+  V2ReviewDiffErrors,
+  V2ReviewDiffResponses,
   V2SessionActiveErrors,
   V2SessionActiveResponses,
   V2SessionCompactErrors,
@@ -379,6 +383,8 @@ import type {
   V2SessionRevertCommitResponses,
   V2SessionRevertStageErrors,
   V2SessionRevertStageResponses,
+  V2SessionSetTitleErrors,
+  V2SessionSetTitleResponses,
   V2SessionSwitchAgentErrors,
   V2SessionSwitchAgentResponses,
   V2SessionSwitchModelErrors,
@@ -5059,6 +5065,28 @@ export class Location extends HeyApiClient {
       ...params,
     })
   }
+
+  /**
+   * Reload location
+   *
+   * Dispose cached services so the next request reloads the location configuration.
+   */
+  public reload<ThrowOnError extends boolean = false>(
+    parameters?: {
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
+    return (options?.client ?? this.client).post<V2LocationReloadResponses, V2LocationReloadErrors, ThrowOnError>({
+      url: "/api/location/reload",
+      ...options,
+      ...params,
+    })
+  }
 }
 
 export class Agent extends HeyApiClient {
@@ -5535,6 +5563,41 @@ export class Session3 extends HeyApiClient {
       url: "/api/session/{sessionID}",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Set session title
+   *
+   * Set the title shown for a session.
+   */
+  public setTitle<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      title?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "body", key: "title" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<V2SessionSetTitleResponses, V2SessionSetTitleErrors, ThrowOnError>({
+      url: "/api/session/{sessionID}/title",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 
@@ -6519,6 +6582,41 @@ export class Fs extends HeyApiClient {
   }
 }
 
+export class Review extends HeyApiClient {
+  /**
+   * Get review diff
+   *
+   * Get location-scoped changes against the default branch merge base.
+   */
+  public diff<ThrowOnError extends boolean = false>(
+    parameters?: {
+      location?: {
+        directory?: string
+        workspace?: string
+      }
+      context?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "location" },
+            { in: "query", key: "context" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<V2ReviewDiffResponses, V2ReviewDiffErrors, ThrowOnError>({
+      url: "/api/review/diff",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Command2 extends HeyApiClient {
   /**
    * List commands
@@ -7057,6 +7155,11 @@ export class V2 extends HeyApiClient {
   private _fs?: Fs
   get fs(): Fs {
     return (this._fs ??= new Fs({ client: this.client }))
+  }
+
+  private _review?: Review
+  get review(): Review {
+    return (this._review ??= new Review({ client: this.client }))
   }
 
   private _command?: Command2

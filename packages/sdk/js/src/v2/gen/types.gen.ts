@@ -18,6 +18,7 @@ export type Event =
   | EventMessagePartRemoved
   | EventSessionNextAgentSwitched
   | EventSessionNextModelSwitched
+  | EventSessionNextTitleUpdated
   | EventSessionNextMoved
   | EventSessionNextPrompted
   | EventSessionNextPromptAdmitted
@@ -840,6 +841,15 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "session.next.title.updated"
+        properties: {
+          timestamp: number
+          sessionID: string
+          title: string
+        }
+      }
+    | {
+        id: string
         type: "session.next.moved"
         properties: {
           timestamp: number
@@ -1610,6 +1620,7 @@ export type GlobalEvent = {
     | SyncEventMessagePartRemoved
     | SyncEventSessionNextAgentSwitched
     | SyncEventSessionNextModelSwitched
+    | SyncEventSessionNextTitleUpdated
     | SyncEventSessionNextMoved
     | SyncEventSessionNextPrompted
     | SyncEventSessionNextPromptAdmitted
@@ -1636,6 +1647,9 @@ export type GlobalEvent = {
     | SyncEventSessionNextRevertStaged
     | SyncEventSessionNextRevertCleared
     | SyncEventSessionNextRevertCommitted
+    | SyncEventQuestionV2Asked
+    | SyncEventQuestionV2Replied
+    | SyncEventQuestionV2Rejected
 }
 
 /**
@@ -2736,42 +2750,46 @@ export type UnknownError1 = {
   ref?: string
 }
 
-export type SessionDurableEvent =
-  | SessionNextAgentSwitched
-  | SessionNextModelSwitched
-  | SessionNextMoved
-  | SessionNextPrompted
-  | SessionNextPromptAdmitted
-  | SessionNextContextUpdated
-  | SessionNextSynthetic
-  | SessionNextShellStarted
-  | SessionNextShellEnded
-  | SessionNextStepStarted
-  | SessionNextStepEnded
-  | SessionNextStepFailed
-  | SessionNextTextStarted
-  | SessionNextTextEnded
-  | SessionNextToolInputStarted
-  | SessionNextToolInputEnded
-  | SessionNextToolCalled
-  | SessionNextToolProgress
-  | SessionNextToolSuccess
-  | SessionNextToolFailed
-  | SessionNextReasoningStarted
-  | SessionNextReasoningEnded
-  | SessionNextRetried
-  | SessionNextCompactionStarted
-  | SessionNextCompactionEnded
-  | SessionNextRevertStaged
-  | SessionNextRevertCleared
-  | SessionNextRevertCommitted
-
 export type SessionHistory = {
-  data: Array<SessionDurableEvent>
+  data: Array<
+    | SessionCreated
+    | SessionUpdated
+    | SessionDeleted
+    | SessionNextAgentSwitched
+    | SessionNextModelSwitched
+    | SessionNextTitleUpdated
+    | SessionNextMoved
+    | SessionNextPrompted
+    | SessionNextPromptAdmitted
+    | SessionNextContextUpdated
+    | SessionNextSynthetic
+    | SessionNextShellStarted
+    | SessionNextShellEnded
+    | SessionNextStepStarted
+    | SessionNextStepEnded
+    | SessionNextStepFailed
+    | SessionNextTextStarted
+    | SessionNextTextEnded
+    | SessionNextToolInputStarted
+    | SessionNextToolInputEnded
+    | SessionNextToolCalled
+    | SessionNextToolProgress
+    | SessionNextToolSuccess
+    | SessionNextToolFailed
+    | SessionNextReasoningStarted
+    | SessionNextReasoningEnded
+    | SessionNextRetried
+    | SessionNextCompactionStarted
+    | SessionNextCompactionEnded
+    | SessionNextRevertStaged
+    | SessionNextRevertCleared
+    | SessionNextRevertCommitted
+    | QuestionV2Asked
+    | QuestionV2Replied
+    | QuestionV2Rejected
+  >
   hasMore: boolean
 }
-
-export type SessionDurableEventStream = string
 
 export type SessionMessagesResponse = {
   data: Array<SessionMessage>
@@ -2866,6 +2884,7 @@ export type V2Event =
   | MessagePartRemoved
   | SessionNextAgentSwitched
   | SessionNextModelSwitched
+  | SessionNextTitleUpdated
   | SessionNextMoved
   | SessionNextPrompted
   | SessionNextPromptAdmitted
@@ -3328,6 +3347,22 @@ export type SyncEventSessionNextModelSwitched = {
       sessionID: string
       messageID: string
       model: ModelRef
+    }
+  }
+}
+
+export type SyncEventSessionNextTitleUpdated = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.title.updated.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      title: string
     }
   }
 }
@@ -3823,6 +3858,57 @@ export type SyncEventSessionNextRevertCommitted = {
   }
 }
 
+export type SyncEventQuestionV2Asked = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "question.v2.asked.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      id: string
+      sessionID: string
+      /**
+       * Questions to ask
+       */
+      questions: Array<QuestionV2Info>
+      tool?: QuestionV2Tool
+    }
+  }
+}
+
+export type SyncEventQuestionV2Replied = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "question.v2.replied.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      requestID: string
+      answers: Array<QuestionV2Answer>
+    }
+  }
+}
+
+export type SyncEventQuestionV2Rejected = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "question.v2.rejected.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      requestID: string
+    }
+  }
+}
+
 export type ConfigV2ReferenceGit = {
   repository: string
   branch?: string
@@ -4162,6 +4248,60 @@ export type SessionMessage =
   | SessionMessageAssistant
   | SessionMessageCompaction
 
+export type SessionCreated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.created"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    info: Session
+  }
+}
+
+export type SessionUpdated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.updated"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    info: Session
+  }
+}
+
+export type SessionDeleted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.deleted"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    info: Session
+  }
+}
+
 export type SessionNextAgentSwitched = {
   id: string
   metadata?: {
@@ -4199,6 +4339,25 @@ export type SessionNextModelSwitched = {
     sessionID: string
     messageID: string
     model: ModelRef
+  }
+}
+
+export type SessionNextTitleUpdated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.title.updated"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    title: string
   }
 }
 
@@ -4771,6 +4930,66 @@ export type SessionNextRevertCommitted = {
   }
 }
 
+export type QuestionV2Asked = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "question.v2.asked"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    id: string
+    sessionID: string
+    /**
+     * Questions to ask
+     */
+    questions: Array<QuestionV2Info>
+    tool?: QuestionV2Tool
+  }
+}
+
+export type QuestionV2Replied = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "question.v2.replied"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    requestID: string
+    answers: Array<QuestionV2Answer>
+  }
+}
+
+export type QuestionV2Rejected = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "question.v2.rejected"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    requestID: string
+  }
+}
+
 export type ModelApi =
   | {
       id: string
@@ -5086,60 +5305,6 @@ export type CatalogUpdated = {
   location?: LocationRef
   data: {
     [key: string]: unknown
-  }
-}
-
-export type SessionCreated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "session.created"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    sessionID: string
-    info: Session
-  }
-}
-
-export type SessionUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "session.updated"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    sessionID: string
-    info: Session
-  }
-}
-
-export type SessionDeleted = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "session.deleted"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    sessionID: string
-    info: Session
   }
 }
 
@@ -5595,66 +5760,6 @@ export type PtyDeleted = {
   location?: LocationRef
   data: {
     id: string
-  }
-}
-
-export type QuestionV2Asked = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "question.v2.asked"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    id: string
-    sessionID: string
-    /**
-     * Questions to ask
-     */
-    questions: Array<QuestionV2Info>
-    tool?: QuestionV2Tool
-  }
-}
-
-export type QuestionV2Replied = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "question.v2.replied"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    sessionID: string
-    requestID: string
-    answers: Array<QuestionV2Answer>
-  }
-}
-
-export type QuestionV2Rejected = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "question.v2.rejected"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    sessionID: string
-    requestID: string
   }
 }
 
@@ -6267,6 +6372,16 @@ export type EventSessionNextModelSwitched = {
     sessionID: string
     messageID: string
     model: ModelRef
+  }
+}
+
+export type EventSessionNextTitleUpdated = {
+  id: string
+  type: "session.next.title.updated"
+  properties: {
+    timestamp: number
+    sessionID: string
+    title: string
   }
 }
 
@@ -11292,6 +11407,40 @@ export type V2LocationGetResponses = {
 
 export type V2LocationGetResponse = V2LocationGetResponses[keyof V2LocationGetResponses]
 
+export type V2LocationReloadData = {
+  body?: never
+  path?: never
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/location/reload"
+}
+
+export type V2LocationReloadErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2LocationReloadError = V2LocationReloadErrors[keyof V2LocationReloadErrors]
+
+export type V2LocationReloadResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2LocationReloadResponse = V2LocationReloadResponses[keyof V2LocationReloadResponses]
+
 export type V2AgentListData = {
   body?: never
   path?: never
@@ -11475,6 +11624,43 @@ export type V2SessionGetResponses = {
 }
 
 export type V2SessionGetResponse = V2SessionGetResponses[keyof V2SessionGetResponses]
+
+export type V2SessionSetTitleData = {
+  body: {
+    title: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/title"
+}
+
+export type V2SessionSetTitleErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+}
+
+export type V2SessionSetTitleError = V2SessionSetTitleErrors[keyof V2SessionSetTitleErrors]
+
+export type V2SessionSetTitleResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2SessionSetTitleResponse = V2SessionSetTitleResponses[keyof V2SessionSetTitleResponses]
 
 export type V2SessionSwitchAgentData = {
   body: {
@@ -11945,7 +12131,7 @@ export type V2SessionEventsResponses = {
   200: {
     id: string
     event: string
-    data: SessionDurableEventStream
+    data: string
   }
 }
 
@@ -12929,6 +13115,48 @@ export type V2FsFindResponses = {
 }
 
 export type V2FsFindResponse = V2FsFindResponses[keyof V2FsFindResponses]
+
+export type V2ReviewDiffData = {
+  body?: never
+  path?: never
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+    context?: string
+  }
+  url: "/api/review/diff"
+}
+
+export type V2ReviewDiffErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type V2ReviewDiffError = V2ReviewDiffErrors[keyof V2ReviewDiffErrors]
+
+export type V2ReviewDiffResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data: Array<FileDiff>
+  }
+}
+
+export type V2ReviewDiffResponse = V2ReviewDiffResponses[keyof V2ReviewDiffResponses]
 
 export type V2CommandListData = {
   body?: never
