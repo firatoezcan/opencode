@@ -72,7 +72,7 @@ describe("QuestionV2", () => {
         }),
       )
       expect(pendingAsked?.id).toBe(published[0]?.id)
-      yield* service.reply({ requestID: request.id, answers: [["One"]] })
+      expect(yield* service.reply({ requestID: request.id, answers: [["One"]] })).toBe("active")
 
       expect(yield* Fiber.join(fiber)).toEqual([["One"]])
       expect(yield* service.list()).toEqual([])
@@ -136,7 +136,7 @@ describe("QuestionV2", () => {
       })
 
       expect(yield* service.list()).toEqual([request])
-      yield* service.reply({ requestID: request.id, answers: [["One"]] })
+      expect(yield* service.reply({ requestID: request.id, answers: [["One"]] })).toBe("recovered")
 
       expect(yield* service.list()).toEqual([])
       expect(published.map((event) => event.type)).toEqual([

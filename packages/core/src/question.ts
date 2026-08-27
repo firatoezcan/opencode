@@ -70,9 +70,11 @@ export interface ReplyInput {
   readonly answers: ReadonlyArray<Answer>
 }
 
+export type ReplyState = "active" | "recovered"
+
 export interface Interface {
   readonly ask: (input: AskInput) => Effect.Effect<ReadonlyArray<Answer>, RejectedError>
-  readonly reply: (input: ReplyInput) => Effect.Effect<void, NotFoundError>
+  readonly reply: (input: ReplyInput) => Effect.Effect<ReplyState, NotFoundError>
   readonly reject: (requestID: ID) => Effect.Effect<void, NotFoundError>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
@@ -307,6 +309,7 @@ const layer = Layer.effect(
           }
           if (existing) yield* Deferred.succeed(existing.deferred, input.answers)
           pending.delete(input.requestID)
+          return existing ? "active" : "recovered"
         }),
       ),
     )
