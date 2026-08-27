@@ -402,23 +402,36 @@ const layer = Layer.effect(
       readonly force: boolean
     }) {
       const recoveredQuestions = yield* pendingQuestions.recoveries(input.sessionID)
+      let continueAfterRecovery = false
       for (const recovery of recoveredQuestions) {
-        if (recovery.settled) continue
         const tool = recovery.request.tool
-        yield* events.publish(SessionEvent.Tool.Success, {
-          timestamp: yield* DateTime.now,
-          sessionID: input.sessionID,
-          assistantMessageID: tool.messageID,
-          callID: tool.callID,
-          structured: { answers: recovery.answers.map((answer) => [...answer]) },
-          content: [{ type: "text", text: QuestionV2.toModelOutput(recovery.request.questions, recovery.answers) }],
-          result: { answers: recovery.answers.map((answer) => [...answer]) },
-          provider: { executed: false },
-        })
+        if (recovery._tag === "Rejected") {
+          yield* events.publish(SessionEvent.Tool.Failed, {
+            timestamp: yield* DateTime.now,
+            sessionID: input.sessionID,
+            assistantMessageID: tool.messageID,
+            callID: tool.callID,
+            error: { type: "unknown", message: "Tool execution interrupted" },
+            provider: { executed: false },
+          })
+          continue
+        }
+        continueAfterRecovery = true
+        if (!recovery.settled)
+          yield* events.publish(SessionEvent.Tool.Success, {
+            timestamp: yield* DateTime.now,
+            sessionID: input.sessionID,
+            assistantMessageID: tool.messageID,
+            callID: tool.callID,
+            structured: { answers: recovery.answers.map((answer) => [...answer]) },
+            content: [{ type: "text", text: QuestionV2.toModelOutput(recovery.request.questions, recovery.answers) }],
+            result: { answers: recovery.answers.map((answer) => [...answer]) },
+            provider: { executed: false },
+          })
       }
       const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
-      const force = input.force || recoveredQuestions.length > 0
+      const force = input.force || continueAfterRecovery
       if (!force && !hasSteer && !hasQueue) return
       yield* failInterruptedTools(input.sessionID)
       let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined

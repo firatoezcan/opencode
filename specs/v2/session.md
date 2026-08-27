@@ -160,9 +160,9 @@ Inbox delivery is explicit:
 Execution has two entry points:
 
 - `run` is an explicit resume. It joins any active execution or starts a forced drain while idle. A forced drain bypasses the no-eligible-input guard, but preparation may still fail before a provider attempt.
-- `wake` reports newly recorded durable inbox work. Repeated wakes coalesce. A wake calls the provider only when it can promote eligible input.
+- `wake` reports newly recorded durable work. Repeated wakes coalesce. A wake calls the provider only when it can promote eligible inbox input or continue a durably replied question. A recovered rejection wakes only long enough to fail its pending tool.
 
-Post-crash continuation recovery is intentionally deferred. A wake does not infer that ambiguous provider work is safe to retry after an input has already been promoted. Explicit `run` may deliberately continue from durable projected history. A future recovery slice should model provider-dispatch ambiguity, required continuation, queued-input promotion, retry policy, and visible recovery status together. It must not assume an enclosing durable execution identity that the Session model does not otherwise need.
+General post-crash continuation recovery is intentionally deferred. Durable question resolution is deterministic: after a rebuild, a reply settles the tool and continues from projected history, while a rejection fails the tool without calling the provider. A wake does not infer that other ambiguous provider work is safe to retry after an input has already been promoted. Explicit `run` may deliberately continue from durable projected history. A future recovery slice should model provider-dispatch ambiguity, other required continuation, queued-input promotion, retry policy, and visible recovery status together. It must not assume an enclosing durable execution identity that the Session model does not otherwise need.
 
 A process-global `SessionRunCoordinator` serializes execution for each local Session while allowing different Sessions to run concurrently. Resumes join active execution, overlapping wakes coalesce into one follow-up, and interruption stops current process-local execution without deleting durable inbox work. The runner enters the Session's current Location when execution starts and fences each new provider turn against that Location.
 

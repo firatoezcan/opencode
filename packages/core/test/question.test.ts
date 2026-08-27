@@ -163,7 +163,7 @@ describe("QuestionV2", () => {
       expect(yield* service.list()).toEqual([])
       expect(published.map((event) => event.type)).toEqual([QuestionV2.Event.Asked.type, QuestionV2.Event.Replied.type])
       expect(yield* pending.recoveries(sessionID)).toEqual([
-        { request: { ...request, tool }, answers: [["One"]], settled: false },
+        { _tag: "Replied", request: { ...request, tool }, answers: [["One"]], settled: false },
       ])
     }),
   )

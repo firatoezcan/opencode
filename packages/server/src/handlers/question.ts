@@ -23,6 +23,21 @@ export const QuestionHandler = HttpApiBuilder.group(Api, "server.question", (han
       if (!request || request.sessionID !== sessionID) return yield* missingRequest(requestID)
       return yield* use(question)
     })
+    const wakeRecovered = Effect.fnUntraced(function* (
+      sessionID: QuestionV2.Request["sessionID"],
+      state: QuestionV2.RecoveryState,
+    ) {
+      if (state === "active") return
+      yield* session.wake(sessionID).pipe(
+        Effect.mapError(
+          () =>
+            new SessionNotFoundError({
+              sessionID,
+              message: `Session not found: ${sessionID}`,
+            }),
+        ),
+      )
+    })
 
     return handlers
       .handle(
@@ -46,27 +61,19 @@ export const QuestionHandler = HttpApiBuilder.group(Api, "server.question", (han
               .reply({ requestID: ctx.params.requestID, answers: ctx.payload.answers })
               .pipe(Effect.catchTag("QuestionV2.NotFoundError", () => missingRequest(ctx.params.requestID))),
           )
-          if (state === "recovered")
-            yield* session.wake(ctx.params.sessionID).pipe(
-              Effect.mapError(
-                () =>
-                  new SessionNotFoundError({
-                    sessionID: ctx.params.sessionID,
-                    message: `Session not found: ${ctx.params.sessionID}`,
-                  }),
-              ),
-            )
+          yield* wakeRecovered(ctx.params.sessionID, state)
           return HttpApiSchema.NoContent.make()
         }),
       )
       .handle(
         "session.question.reject",
         Effect.fn(function* (ctx) {
-          yield* withOwnedQuestion(ctx.params.sessionID, ctx.params.requestID, (question) =>
+          const state = yield* withOwnedQuestion(ctx.params.sessionID, ctx.params.requestID, (question) =>
             question
               .reject(ctx.params.requestID)
               .pipe(Effect.catchTag("QuestionV2.NotFoundError", () => missingRequest(ctx.params.requestID))),
           )
+          yield* wakeRecovered(ctx.params.sessionID, state)
           return HttpApiSchema.NoContent.make()
         }),
       )

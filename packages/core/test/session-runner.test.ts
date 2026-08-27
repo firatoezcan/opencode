@@ -399,7 +399,7 @@ const recordPendingQuestion = Effect.fn("SessionRunnerTest.recordPendingQuestion
   const events = yield* EventV2.Service
   const assistantMessageID = SessionMessage.ID.make(`msg_${suffix}`)
   const callID = `call_${suffix}`
-  const request: QuestionV2.Request = {
+  const request = {
     id: QuestionV2.ID.ascending(`que_${suffix}`),
     sessionID,
     questions: [
@@ -410,7 +410,7 @@ const recordPendingQuestion = Effect.fn("SessionRunnerTest.recordPendingQuestion
       },
     ],
     tool: { messageID: assistantMessageID, callID },
-  }
+  } satisfies QuestionV2.Request & { readonly tool: QuestionV2.Tool }
   yield* events.publish(SessionEvent.Step.Started, {
     sessionID,
     assistantMessageID,
@@ -3295,21 +3295,16 @@ describe("SessionRunnerLLM", () => {
       })
       yield* SessionInput.promoteSteers((yield* Database.Service).db, events, sessionID, Number.MAX_SAFE_INTEGER)
       const request = yield* recordPendingQuestion("recovered_rejection")
-      const tool = request.tool!
+      const tool = request.tool
       yield* events.publish(QuestionV2.Event.Rejected, { sessionID, requestID: request.id })
+      expect(yield* pendingQuestions.recoveries(sessionID)).toEqual([{ _tag: "Rejected", request }])
       requests.length = 0
       response = fragmentFixture("text", "text-after-rejection", ["Must not continue"]).completeEvents
-      const failed = yield* events
-        .subscribe(SessionEvent.Tool.Failed)
-        .pipe(
-          Stream.filter((event) => event.data.callID === tool.callID),
-          Stream.take(1),
-          Stream.runDrain,
-          Effect.forkScoped,
-        )
 
       yield* session.wake(sessionID)
-      yield* Fiber.join(failed).pipe(
+      yield* Effect.gen(function* () {
+        while ((yield* pendingQuestions.recoveries(sessionID)).length > 0) yield* Effect.yieldNow
+      }).pipe(
         Effect.timeoutOrElse({
           duration: "1 second",
           orElse: () => Effect.fail(new Error("recovered question rejection did not fail its tool")),
@@ -3320,11 +3315,18 @@ describe("SessionRunnerLLM", () => {
       }).pipe(
         Effect.timeoutOrElse({
           duration: "1 second",
-          orElse: () => Effect.fail(new Error("recovered question rejection did not finish settlement")),
+          orElse: () => Effect.fail(new Error("recovered question rejection continued provider execution")),
         }),
       )
+      const failures = yield* (yield* Database.Service).db
+        .select()
+        .from(EventTable)
+        .where(eq(EventTable.type, EventV2.versionedType(SessionEvent.Tool.Failed.type, 1)))
+        .all()
+        .pipe(Effect.orDie)
 
       expect(requests).toEqual([])
+      expect(failures.some((event) => event.data.callID === tool.callID)).toBe(true)
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Reject after restart" },
         {

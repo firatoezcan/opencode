@@ -70,12 +70,12 @@ export interface ReplyInput {
   readonly answers: ReadonlyArray<Answer>
 }
 
-export type ReplyState = "active" | "recovered"
+export type RecoveryState = "active" | "recovered"
 
 export interface Interface {
   readonly ask: (input: AskInput) => Effect.Effect<ReadonlyArray<Answer>, RejectedError>
-  readonly reply: (input: ReplyInput) => Effect.Effect<ReplyState, NotFoundError>
-  readonly reject: (requestID: ID) => Effect.Effect<void, NotFoundError>
+  readonly reply: (input: ReplyInput) => Effect.Effect<RecoveryState, NotFoundError>
+  readonly reject: (requestID: ID) => Effect.Effect<RecoveryState, NotFoundError>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
 
@@ -83,17 +83,23 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 
 export type PendingRequest = EventV2.Payload<typeof Event.Asked>
 
-export interface RecoveredReply {
-  readonly request: Request & { readonly tool: Tool }
-  readonly answers: ReadonlyArray<Answer>
-  readonly settled: boolean
-}
+export type RecoveredRequest =
+  | {
+      readonly _tag: "Replied"
+      readonly request: Request & { readonly tool: Tool }
+      readonly answers: ReadonlyArray<Answer>
+      readonly settled: boolean
+    }
+  | {
+      readonly _tag: "Rejected"
+      readonly request: Request & { readonly tool: Tool }
+    }
 
 export interface PendingRequestsInterface {
   readonly get: (requestID: ID) => Effect.Effect<PendingRequest | undefined>
   readonly list: () => Effect.Effect<ReadonlyArray<PendingRequest>>
   readonly recoverable: Effect.Effect<ReadonlySet<SessionSchema.ID>>
-  readonly recoveries: (sessionID: SessionSchema.ID) => Effect.Effect<ReadonlyArray<RecoveredReply>>
+  readonly recoveries: (sessionID: SessionSchema.ID) => Effect.Effect<ReadonlyArray<RecoveredRequest>>
 }
 
 export class PendingRequests extends Context.Service<PendingRequests, PendingRequestsInterface>()(
@@ -146,10 +152,28 @@ const pendingRequestsLayer = Layer.effect(
       .orderBy(asc(EventTable.aggregate_id), asc(EventTable.seq))
       .all()
       .pipe(Effect.orDie)
+    type Resolution =
+      | { readonly _tag: "Replied"; readonly answers: ReadonlyArray<Answer>; readonly settled: boolean }
+      | { readonly _tag: "Rejected" }
     type PendingState = {
       readonly asked: PendingRequest
-      readonly answers?: ReadonlyArray<Answer>
-      readonly settled?: boolean
+      readonly resolution?: Resolution
+    }
+    const replyRequest = (pending: Map<ID, PendingState>, data: EventV2.Data<typeof Event.Replied>) => {
+      const state = pending.get(data.requestID)
+      if (!state) return
+      if (state.asked.data.tool)
+        pending.set(data.requestID, {
+          ...state,
+          resolution: { _tag: "Replied", answers: data.answers, settled: false },
+        })
+      else pending.delete(data.requestID)
+    }
+    const rejectRequest = (pending: Map<ID, PendingState>, data: EventV2.Data<typeof Event.Rejected>) => {
+      const state = pending.get(data.requestID)
+      if (!state) return
+      if (state.asked.data.tool) pending.set(data.requestID, { ...state, resolution: { _tag: "Rejected" } })
+      else pending.delete(data.requestID)
     }
     const settleTool = (
       pending: Map<ID, PendingState>,
@@ -159,13 +183,19 @@ const pendingRequestsLayer = Layer.effect(
       for (const [requestID, state] of pending) {
         const tool = state.asked.data.tool
         if (tool?.messageID !== identity.assistantMessageID || tool.callID !== identity.callID) continue
-        if (succeeded && state.answers) pending.set(requestID, { ...state, settled: true })
+        if (succeeded && state.resolution?._tag === "Replied")
+          pending.set(requestID, { ...state, resolution: { ...state.resolution, settled: true } })
         else pending.delete(requestID)
       }
     }
     const continueSession = (pending: Map<ID, PendingState>, sessionID: SessionSchema.ID) => {
       for (const [requestID, state] of pending) {
-        if (state.settled && state.asked.data.sessionID === sessionID) pending.delete(requestID)
+        if (
+          state.resolution?._tag === "Replied" &&
+          state.resolution.settled &&
+          state.asked.data.sessionID === sessionID
+        )
+          pending.delete(requestID)
       }
     }
     const requests = stored.reduce((pending, row) => {
@@ -186,15 +216,11 @@ const pendingRequestsLayer = Layer.effect(
         return pending
       }
       if (row.type === types.replied) {
-        const data = Schema.decodeUnknownSync(Event.Replied.data)(row.data)
-        const state = pending.get(data.requestID)
-        if (!state) return pending
-        if (state.asked.data.tool) pending.set(data.requestID, { ...state, answers: data.answers })
-        else pending.delete(data.requestID)
+        replyRequest(pending, Schema.decodeUnknownSync(Event.Replied.data)(row.data))
         return pending
       }
       if (row.type === types.rejected) {
-        pending.delete(Schema.decodeUnknownSync(Event.Rejected.data)(row.data).requestID)
+        rejectRequest(pending, Schema.decodeUnknownSync(Event.Rejected.data)(row.data))
         return pending
       }
       if (row.type === types.succeeded) {
@@ -214,17 +240,10 @@ const pendingRequestsLayer = Layer.effect(
       }),
     )
     yield* events.project(Event.Replied, (event) =>
-      Effect.sync(() => {
-        const state = requests.get(event.data.requestID)
-        if (!state) return
-        if (state.asked.data.tool) requests.set(event.data.requestID, { ...state, answers: event.data.answers })
-        else requests.delete(event.data.requestID)
-      }),
+      Effect.sync(() => replyRequest(requests, event.data)),
     )
     yield* events.project(Event.Rejected, (event) =>
-      Effect.sync(() => {
-        requests.delete(event.data.requestID)
-      }),
+      Effect.sync(() => rejectRequest(requests, event.data)),
     )
     yield* events.project(SessionEvent.Tool.Success, (event) =>
       Effect.sync(() => settleTool(requests, event.data, true)),
@@ -237,15 +256,20 @@ const pendingRequestsLayer = Layer.effect(
     )
     yield* Effect.addFinalizer(() => Effect.sync(() => requests.clear()))
     const findRecoveries = (sessionID?: SessionSchema.ID) => {
-      const result: RecoveredReply[] = []
+      const result: RecoveredRequest[] = []
       for (const state of requests.values()) {
         const tool = state.asked.data.tool
-        if (!state.answers || !tool || (sessionID !== undefined && state.asked.data.sessionID !== sessionID)) continue
-        result.push({
-          request: { ...state.asked.data, tool },
-          answers: state.answers,
-          settled: state.settled === true,
-        })
+        const resolution = state.resolution
+        if (!resolution || !tool || (sessionID !== undefined && state.asked.data.sessionID !== sessionID)) continue
+        const request = { ...state.asked.data, tool }
+        if (resolution._tag === "Rejected") result.push({ _tag: "Rejected", request })
+        else
+          result.push({
+            _tag: "Replied",
+            request,
+            answers: resolution.answers,
+            settled: resolution.settled,
+          })
       }
       return result
     }
@@ -253,11 +277,11 @@ const pendingRequestsLayer = Layer.effect(
       get: Effect.fn("QuestionV2.PendingRequests.get")((requestID) =>
         Effect.sync(() => {
           const state = requests.get(requestID)
-          return state?.answers ? undefined : state?.asked
+          return state?.resolution ? undefined : state?.asked
         }),
       ),
       list: Effect.fn("QuestionV2.PendingRequests.list")(() =>
-        Effect.sync(() => Array.from(requests.values()).flatMap((state) => (state.answers ? [] : [state.asked]))),
+        Effect.sync(() => Array.from(requests.values()).flatMap((state) => (state.resolution ? [] : [state.asked]))),
       ),
       recoverable: Effect.sync(() => new Set(findRecoveries().map((recovery) => recovery.request.sessionID))),
       recoveries: Effect.fn("QuestionV2.PendingRequests.recoveries")((sessionID) =>
@@ -360,6 +384,7 @@ const layer = Layer.effect(
           })
           if (existing) yield* Deferred.fail(existing.deferred, new RejectedError())
           pending.delete(requestID)
+          return existing ? "active" : "recovered"
         }),
       ),
     )
