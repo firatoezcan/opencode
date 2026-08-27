@@ -48,22 +48,23 @@ describe("HttpApiCodegen.generate", () => {
     )
   })
 
-  test("allows Promise outputs to use an authoritative imported wire type", () => {
+  test("emits a runtime decoder for a selected Promise output", () => {
     const contract = compileContract(
-      api(HttpApiEndpoint.get("events", "/event", { success: HttpApiSchema.StreamSse({ data: Schema.Unknown }) })),
+      api(
+        HttpApiEndpoint.get("events", "/event", {
+          success: HttpApiSchema.StreamSse({
+            data: Schema.Struct({ id: Schema.String, type: Schema.Literal("server.connected") }),
+          }),
+        }),
+      ),
     )
     const output = emitPromise(contract, {
-      outputTypes: {
-        "session.events": {
-          name: "EventWire",
-          import: 'import type { EventWire } from "./event-wire"',
-        },
-      },
+      runtimeOutputs: new Set(["session.events"]),
     })
-    const types = output.files.find((file) => file.path === "types.ts")?.content
+    const schema = output.files.find((file) => file.path === "schema.ts")?.content
 
-    expect(types).toContain('import type { EventWire } from "./event-wire"')
-    expect(types).toContain("export type SessionEventsOutput = EventWire")
+    expect(schema).toContain("export const SessionEventsOutputSchema")
+    expect(schema).toContain("export const decodeSessionEventsOutput")
   })
 
   test("emits an Effect client against an imported authoritative API", () => {

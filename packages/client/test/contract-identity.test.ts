@@ -44,6 +44,39 @@ test("client and Server contracts generate identically", () => {
   expect(emitPromise(client)).toEqual(emitPromise(server))
 })
 
+test("generated Promise client decodes native events at its public boundary", async () => {
+  const path = new URL("../src/generated/schema.ts", import.meta.url).pathname
+  expect(await Bun.file(path).exists()).toBeTrue()
+
+  const generated = await import(path)
+  const event = { id: "evt_test", type: "server.connected", data: {} }
+  const question = {
+    id: "evt_question",
+    type: "question.v2.asked",
+    data: {
+      id: "que_test",
+      sessionID: "ses_test",
+      questions: [
+        {
+          question: "Choose a target",
+          header: "Target",
+          options: [{ label: "Current", description: "Use the current target" }],
+        },
+      ],
+    },
+  }
+
+  expect(generated.decodeEventsSubscribeOutput(event)).toEqual(event)
+  expect(generated.decodeEventsSubscribeOutput(question)).toEqual(question)
+  expect(() => generated.decodeEventsSubscribeOutput({ type: "server.connected", data: {} })).toThrow()
+  expect(() =>
+    generated.decodeEventsSubscribeOutput({
+      ...question,
+      data: { ...question.data, questions: [{ question: "Choose a target", options: [] }] },
+    }),
+  ).toThrow()
+})
+
 test("shared DTO schemas construct and decode plain objects", () => {
   const made = Prompt.make({ text: "hello" })
   const decoded = Schema.decodeUnknownSync(Prompt)({ text: "hello" })

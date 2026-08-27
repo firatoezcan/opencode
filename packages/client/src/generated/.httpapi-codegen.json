@@ -2,5 +2,6 @@
   "client-error.ts",
   "client.ts",
   "index.ts",
+  "schema.ts",
   "types.ts"
 ]
