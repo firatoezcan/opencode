@@ -43,6 +43,7 @@ function environment(directory: string, password: string) {
     OPENCODE_DISABLE_AUTOUPDATE: "1",
     OPENCODE_DISABLE_AUTOCOMPACT: "1",
     OPENCODE_MODELS_URL: "http://127.0.0.1:1",
+    OPENCODE_PRINT_LOGS: "1",
     OPENCODE_PURE: "1",
     OPENCODE_SERVER_PASSWORD: password,
     OPENCODE_SERVER_USERNAME: "opencode",
@@ -100,7 +101,7 @@ function expectSecretsAbsent(output: string, secrets: string[]) {
 
 for (const source of ["auth.json", "OPENCODE_AUTH_CONTENT"] as const) {
   test(`compiled serve retains ${source} auth in its protected listener`, async () => {
-    await using tmp = await tmpdir({ git: true })
+    await using tmp = await tmpdir()
     const password = crypto.randomUUID()
     const key = crypto.randomUUID()
     const runtime = environment(tmp.path, password)
@@ -159,7 +160,7 @@ for (const command of [
   { name: "auth list", args: ["auth", "list"] },
 ]) {
   test(`${command.name} preserves file auth when a server password is inherited`, async () => {
-    await using tmp = await tmpdir({ git: true })
+    await using tmp = await tmpdir()
     const password = crypto.randomUUID()
     const key = crypto.randomUUID()
     const runtime = environment(tmp.path, password)
