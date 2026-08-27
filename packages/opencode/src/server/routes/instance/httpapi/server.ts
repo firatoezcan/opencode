@@ -272,6 +272,7 @@ const app = LayerNode.group([
 
 export function createRoutes(
   corsOptions?: CorsOptions,
+  authNode: typeof Auth.node = Auth.unprotectedNode,
 ): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
   const locationServiceMapV2 = buildLocationServiceMap()
 
@@ -305,7 +306,7 @@ export function createRoutes(
     ),
     Layer.provide(locationServiceMapV2),
 
-    Layer.provide(AppNodeBuilderV1.build(app)),
+    Layer.provide(AppNodeBuilderV1.build(app, [[Auth.node, authNode]])),
     // Must stay last: layers provided later in this pipe build beneath earlier ones,
     // so Observability must come after every service graph. Otherwise eagerly forked
     // fibers (e.g. the ModelsDev background refresh) capture Effect's default stdout
