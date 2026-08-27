@@ -14,7 +14,8 @@ import { PublicApi } from "./routes/instance/httpapi/public"
 import type { CorsOptions } from "@opencode-ai/server/cors"
 import { Auth } from "@/auth"
 import { lazy } from "@/util/lazy"
-import { Flag } from "@opencode-ai/core/flag/flag"
+import { memoMap } from "@opencode-ai/core/effect/memo-map"
+import { ServerAuth } from "./auth"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -84,27 +85,44 @@ export async function listen(opts: ListenOptions): Promise<Listener> {
 
 const listenEffect: (opts: ListenOptions) => Effect.Effect<EffectListener, unknown> = Effect.fn("Server.listen")(
   function* (opts: ListenOptions) {
-    const state = yield* startWithPortFallback(opts)
-    const address = yield* tcpAddress(state)
-    const listenerUrl = makeURL(opts.hostname, address.port)
-    const unpublishMdns = yield* setupMdns(opts, address.port, state.scope)
-    url = listenerUrl
+    const scope = Scope.makeUnsafe()
+    return yield* Effect.gen(function* () {
+      const authContext = yield* Layer.buildWithMemoMap(listenerAuthLayer, memoMap, scope)
+      const state = yield* startWithPortFallback(opts, authContext, scope)
+      const address = yield* tcpAddress(state)
+      const listenerUrl = makeURL(opts.hostname, address.port)
+      const unpublishMdns = yield* setupMdns(opts, address.port, state.scope)
+      url = listenerUrl
 
-    return {
-      hostname: opts.hostname,
-      port: address.port,
-      url: listenerUrl,
-      stop: yield* makeStop(state, unpublishMdns, listenerUrl),
-    }
+      return {
+        hostname: opts.hostname,
+        port: address.port,
+        url: listenerUrl,
+        stop: yield* makeStop(state, unpublishMdns, listenerUrl),
+      }
+    }).pipe(Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)))
   },
 )
 
-function listenerLayer(opts: ListenOptions, port: number) {
-  const authNode =
-    Flag.OPENCODE_SERVER_PASSWORD || process.env.OPENCODE_AUTH_CONTENT !== undefined
-      ? Auth.protectedNode
-      : Auth.unprotectedNode
-  return HttpRouter.serve(HttpApiApp.createRoutes(opts, authNode), {
+const listenerAuthLayer = Layer.suspend(() =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const config = yield* ServerAuth.Config
+      const authNode =
+        ServerAuth.required(config) || process.env.OPENCODE_AUTH_CONTENT !== undefined
+          ? Auth.protectedNode
+          : Auth.unprotectedNode
+      return Layer.mergeAll(AppNodeBuilder.build(authNode), ServerAuth.Config.configLayer(config))
+    }),
+  ).pipe(Layer.provide(ServerAuth.Config.layer), Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv()))),
+)
+
+function listenerLayer(
+  opts: ListenOptions,
+  port: number,
+  authContext: Context.Context<Auth.Service | ServerAuth.Config>,
+) {
+  return HttpRouter.serve(HttpApiApp.createRoutes(opts, authContext), {
     middleware: disposeMiddleware,
     disableLogger: true,
     disableListenLog: true,
@@ -120,18 +138,29 @@ function listenerLayer(opts: ListenOptions, port: number) {
   )
 }
 
-function startWithPortFallback(opts: ListenOptions) {
-  if (opts.port !== 0) return startListener(opts, opts.port)
+function startWithPortFallback(
+  opts: ListenOptions,
+  authContext: Context.Context<Auth.Service | ServerAuth.Config>,
+  scope: Scope.Scope,
+) {
+  if (opts.port !== 0) return startListener(opts, opts.port, authContext, scope)
   // Match the legacy listener port-resolution behavior: explicit `0` prefers
   // 4096 first, then any free port.
-  return startListener(opts, 4096).pipe(Effect.catch(() => startListener(opts, 0)))
+  return startListener(opts, 4096, authContext, scope).pipe(
+    Effect.catch(() => startListener(opts, 0, authContext, scope)),
+  )
 }
 
-function startListener(opts: ListenOptions, port: number) {
-  const scope = Scope.makeUnsafe()
-  return Layer.buildWithMemoMap(listenerLayer(opts, port), Layer.makeMemoMapUnsafe(), scope).pipe(
+function startListener(
+  opts: ListenOptions,
+  port: number,
+  authContext: Context.Context<Auth.Service | ServerAuth.Config>,
+  scope: Scope.Scope,
+) {
+  const attemptScope = Scope.forkUnsafe(scope)
+  return Layer.buildWithMemoMap(listenerLayer(opts, port, authContext), Layer.makeMemoMapUnsafe(), attemptScope).pipe(
     Effect.provide(HttpApiApp.context),
-    Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)),
+    Effect.onError(() => Scope.close(attemptScope, Exit.void).pipe(Effect.ignore)),
     Effect.map(
       (ctx): ListenerState => ({
         scope,
