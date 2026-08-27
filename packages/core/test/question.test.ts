@@ -7,6 +7,8 @@ import { Location } from "@opencode-ai/core/location"
 import { QuestionV2 } from "@opencode-ai/core/question"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionEvent } from "@opencode-ai/core/session/event"
+import { SessionMessage } from "@opencode-ai/core/session/message"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
@@ -108,6 +110,53 @@ describe("QuestionV2", () => {
       expect(yield* service.reject(unknown).pipe(Effect.flip)).toEqual(
         new QuestionV2.NotFoundError({ requestID: unknown }),
       )
+    }),
+  )
+
+  it.effect("settles a replayed pending question through the original tool call", () =>
+    Effect.gen(function* () {
+      const service = yield* QuestionV2.Service
+      const events = yield* EventV2.Service
+      const request: QuestionV2.Request = {
+        id: QuestionV2.ID.ascending(),
+        sessionID,
+        questions: [question],
+        tool: { messageID: SessionMessage.ID.make("msg_recovered"), callID: "call_recovered" },
+      }
+      const published: EventV2.Payload[] = []
+      const unsubscribe = yield* events.listen((event) =>
+        Effect.sync(() => {
+          published.push(event)
+        }),
+      )
+      yield* Effect.addFinalizer(() => unsubscribe)
+
+      yield* events.publish(QuestionV2.Event.Asked, request, {
+        location: Location.Ref.make({ directory: AbsolutePath.make("/workspace") }),
+      })
+
+      expect(yield* service.list()).toEqual([request])
+      yield* service.reply({ requestID: request.id, answers: [["One"]] })
+
+      expect(yield* service.list()).toEqual([])
+      expect(published.map((event) => event.type)).toEqual([
+        QuestionV2.Event.Asked.type,
+        QuestionV2.Event.Replied.type,
+        SessionEvent.Tool.Success.type,
+      ])
+      expect(published.at(-1)?.data).toMatchObject({
+        sessionID,
+        assistantMessageID: "msg_recovered",
+        callID: "call_recovered",
+        structured: { answers: [["One"]] },
+        content: [
+          {
+            type: "text",
+            text: 'User has answered your questions: "Which option?"="One". You can now continue with the user\'s answers in mind.',
+          },
+        ],
+        provider: { executed: false },
+      })
     }),
   )
 

@@ -36,7 +36,7 @@ import { Snapshot } from "./snapshot"
 import { SessionRevert } from "./session/revert"
 import { Revert } from "@opencode-ai/schema/revert"
 import { FSUtil } from "./fs-util"
-import { SessionDurable } from "@opencode-ai/schema/durable-event-manifest"
+import { SessionDurable, type SessionDurableEvent } from "@opencode-ai/schema/durable-event-manifest"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -138,7 +138,7 @@ export interface Interface {
     sessionID: SessionSchema.ID
     after?: number
     limit: number
-  }) => Effect.Effect<{ events: ReadonlyArray<SessionEvent.DurableEvent>; hasMore: boolean }, NotFoundError>
+  }) => Effect.Effect<{ events: ReadonlyArray<SessionDurableEvent>; hasMore: boolean }, NotFoundError>
   readonly switchAgent: (input: { sessionID: SessionSchema.ID; agent: string }) => Effect.Effect<void, NotFoundError>
   readonly switchModel: (input: {
     sessionID: SessionSchema.ID

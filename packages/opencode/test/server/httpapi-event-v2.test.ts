@@ -30,13 +30,7 @@ describe("V2 event subscription", () => {
         ],
       }
       const location = Location.Ref.make({ directory: AbsolutePath.make("/workspace") })
-      const asked = {
-        id: EventV2.ID.create(),
-        type: QuestionV2.Event.Asked.type,
-        data: request,
-        location,
-      } satisfies EventV2.Payload<typeof QuestionV2.Event.Asked>
-      yield* pending.add(asked)
+      const asked = yield* events.publish(QuestionV2.Event.Asked, request, { location })
 
       const read = subscription(events, pending).pipe(
         Stream.take(2),

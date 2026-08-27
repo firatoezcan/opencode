@@ -323,9 +323,10 @@ const QuestionV2_Option = Schema.Struct({
   description: Schema.String.annotate({ description: "Explanation of choice" }),
 }).annotate({ identifier: "QuestionV2.Option" })
 
-const QuestionV2_Tool = Schema.Struct({ messageID: Schema.String, callID: Schema.String }).annotate({
-  identifier: "QuestionV2.Tool",
-})
+const QuestionV2_Tool = Schema.Struct({
+  messageID: Schema.String.check(Schema.isStartsWith("msg_")).pipe(Schema.brand("Session.Message.ID")),
+  callID: Schema.String,
+}).annotate({ identifier: "QuestionV2.Tool" })
 
 const QuestionV2_Answer = Schema.Array(Schema.String).annotate({ identifier: "QuestionV2.Answer" })
 

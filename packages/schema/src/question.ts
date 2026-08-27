@@ -5,6 +5,7 @@ import { optional } from "./schema"
 import { define, inventory } from "./event"
 import { ascending } from "./identifier"
 import { SessionID } from "./session-id"
+import { SessionMessage } from "./session-message"
 import { statics } from "./schema"
 
 export const ID = Schema.String.check(Schema.isStartsWith("que")).pipe(
@@ -44,7 +45,7 @@ export const Prompt = Schema.Struct(base).annotate({ identifier: "QuestionV2.Pro
 export interface Prompt extends Schema.Schema.Type<typeof Prompt> {}
 
 export const Tool = Schema.Struct({
-  messageID: Schema.String,
+  messageID: SessionMessage.ID,
   callID: Schema.String,
 }).annotate({ identifier: "QuestionV2.Tool" })
 export interface Tool extends Schema.Schema.Type<typeof Tool> {}
@@ -67,9 +68,12 @@ export const Reply = Schema.Struct({
 }).annotate({ identifier: "QuestionV2.Reply" })
 export interface Reply extends Schema.Schema.Type<typeof Reply> {}
 
-const Asked = define({ type: "question.v2.asked", schema: Request.fields })
+const durable = { durable: { aggregate: "sessionID", version: 1 } } as const
+
+const Asked = define({ type: "question.v2.asked", ...durable, schema: Request.fields })
 const Replied = define({
   type: "question.v2.replied",
+  ...durable,
   schema: {
     sessionID: SessionID,
     requestID: ID,
@@ -78,9 +82,17 @@ const Replied = define({
 })
 const Rejected = define({
   type: "question.v2.rejected",
+  ...durable,
   schema: {
     sessionID: SessionID,
     requestID: ID,
   },
 })
-export const Event = { Asked, Replied, Rejected, Definitions: inventory(Asked, Replied, Rejected) }
+const Definitions = inventory(Asked, Replied, Rejected)
+export const Event = {
+  Asked,
+  Replied,
+  Rejected,
+  DurableDefinitions: Definitions,
+  Definitions,
+}
