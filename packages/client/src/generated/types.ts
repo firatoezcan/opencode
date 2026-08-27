@@ -704,6 +704,189 @@ export type SessionsHistoryOutput = {
     | {
         readonly id: string
         readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.created"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly sessionID: string
+          readonly info: {
+            readonly id: string
+            readonly slug: string
+            readonly projectID: string
+            readonly workspaceID?: string
+            readonly directory: string
+            readonly path?: string
+            readonly parentID?: string
+            readonly summary?: {
+              readonly additions: number
+              readonly deletions: number
+              readonly files: number
+              readonly diffs?: ReadonlyArray<{
+                readonly file?: string
+                readonly patch?: string
+                readonly additions: number
+                readonly deletions: number
+                readonly status?: "added" | "deleted" | "modified"
+              }>
+            }
+            readonly cost?: number
+            readonly tokens?: {
+              readonly input: number
+              readonly output: number
+              readonly reasoning: number
+              readonly cache: { readonly read: number; readonly write: number }
+            }
+            readonly share?: { readonly url: string }
+            readonly title: string
+            readonly agent?: string
+            readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
+            readonly version: string
+            readonly metadata?: { readonly [x: string]: any }
+            readonly time: {
+              readonly created: number
+              readonly updated: number
+              readonly compacting?: number
+              readonly archived?: number
+            }
+            readonly permission?: ReadonlyArray<{
+              readonly permission: string
+              readonly pattern: string
+              readonly action: "allow" | "deny" | "ask"
+            }>
+            readonly revert?: {
+              readonly messageID: string
+              readonly partID?: string
+              readonly snapshot?: string
+              readonly diff?: string
+            }
+          }
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.updated"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly sessionID: string
+          readonly info: {
+            readonly id: string
+            readonly slug: string
+            readonly projectID: string
+            readonly workspaceID?: string
+            readonly directory: string
+            readonly path?: string
+            readonly parentID?: string
+            readonly summary?: {
+              readonly additions: number
+              readonly deletions: number
+              readonly files: number
+              readonly diffs?: ReadonlyArray<{
+                readonly file?: string
+                readonly patch?: string
+                readonly additions: number
+                readonly deletions: number
+                readonly status?: "added" | "deleted" | "modified"
+              }>
+            }
+            readonly cost?: number
+            readonly tokens?: {
+              readonly input: number
+              readonly output: number
+              readonly reasoning: number
+              readonly cache: { readonly read: number; readonly write: number }
+            }
+            readonly share?: { readonly url: string }
+            readonly title: string
+            readonly agent?: string
+            readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
+            readonly version: string
+            readonly metadata?: { readonly [x: string]: any }
+            readonly time: {
+              readonly created: number
+              readonly updated: number
+              readonly compacting?: number
+              readonly archived?: number
+            }
+            readonly permission?: ReadonlyArray<{
+              readonly permission: string
+              readonly pattern: string
+              readonly action: "allow" | "deny" | "ask"
+            }>
+            readonly revert?: {
+              readonly messageID: string
+              readonly partID?: string
+              readonly snapshot?: string
+              readonly diff?: string
+            }
+          }
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.deleted"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly sessionID: string
+          readonly info: {
+            readonly id: string
+            readonly slug: string
+            readonly projectID: string
+            readonly workspaceID?: string
+            readonly directory: string
+            readonly path?: string
+            readonly parentID?: string
+            readonly summary?: {
+              readonly additions: number
+              readonly deletions: number
+              readonly files: number
+              readonly diffs?: ReadonlyArray<{
+                readonly file?: string
+                readonly patch?: string
+                readonly additions: number
+                readonly deletions: number
+                readonly status?: "added" | "deleted" | "modified"
+              }>
+            }
+            readonly cost?: number
+            readonly tokens?: {
+              readonly input: number
+              readonly output: number
+              readonly reasoning: number
+              readonly cache: { readonly read: number; readonly write: number }
+            }
+            readonly share?: { readonly url: string }
+            readonly title: string
+            readonly agent?: string
+            readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
+            readonly version: string
+            readonly metadata?: { readonly [x: string]: any }
+            readonly time: {
+              readonly created: number
+              readonly updated: number
+              readonly compacting?: number
+              readonly archived?: number
+            }
+            readonly permission?: ReadonlyArray<{
+              readonly permission: string
+              readonly pattern: string
+              readonly action: "allow" | "deny" | "ask"
+            }>
+            readonly revert?: {
+              readonly messageID: string
+              readonly partID?: string
+              readonly snapshot?: string
+              readonly diff?: string
+            }
+          }
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
         readonly type: "session.next.agent.switched"
         readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
         readonly location?: { readonly directory: string; readonly workspaceID?: string }
@@ -1206,6 +1389,189 @@ export type SessionsEventsInput = {
 }
 
 export type SessionsEventsOutput =
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.created"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly sessionID: string
+        readonly info: {
+          readonly id: string
+          readonly slug: string
+          readonly projectID: string
+          readonly workspaceID?: string
+          readonly directory: string
+          readonly path?: string
+          readonly parentID?: string
+          readonly summary?: {
+            readonly additions: number
+            readonly deletions: number
+            readonly files: number
+            readonly diffs?: ReadonlyArray<{
+              readonly file?: string
+              readonly patch?: string
+              readonly additions: number
+              readonly deletions: number
+              readonly status?: "added" | "deleted" | "modified"
+            }>
+          }
+          readonly cost?: number
+          readonly tokens?: {
+            readonly input: number
+            readonly output: number
+            readonly reasoning: number
+            readonly cache: { readonly read: number; readonly write: number }
+          }
+          readonly share?: { readonly url: string }
+          readonly title: string
+          readonly agent?: string
+          readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
+          readonly version: string
+          readonly metadata?: { readonly [x: string]: any }
+          readonly time: {
+            readonly created: number
+            readonly updated: number
+            readonly compacting?: number
+            readonly archived?: number
+          }
+          readonly permission?: ReadonlyArray<{
+            readonly permission: string
+            readonly pattern: string
+            readonly action: "allow" | "deny" | "ask"
+          }>
+          readonly revert?: {
+            readonly messageID: string
+            readonly partID?: string
+            readonly snapshot?: string
+            readonly diff?: string
+          }
+        }
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.updated"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly sessionID: string
+        readonly info: {
+          readonly id: string
+          readonly slug: string
+          readonly projectID: string
+          readonly workspaceID?: string
+          readonly directory: string
+          readonly path?: string
+          readonly parentID?: string
+          readonly summary?: {
+            readonly additions: number
+            readonly deletions: number
+            readonly files: number
+            readonly diffs?: ReadonlyArray<{
+              readonly file?: string
+              readonly patch?: string
+              readonly additions: number
+              readonly deletions: number
+              readonly status?: "added" | "deleted" | "modified"
+            }>
+          }
+          readonly cost?: number
+          readonly tokens?: {
+            readonly input: number
+            readonly output: number
+            readonly reasoning: number
+            readonly cache: { readonly read: number; readonly write: number }
+          }
+          readonly share?: { readonly url: string }
+          readonly title: string
+          readonly agent?: string
+          readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
+          readonly version: string
+          readonly metadata?: { readonly [x: string]: any }
+          readonly time: {
+            readonly created: number
+            readonly updated: number
+            readonly compacting?: number
+            readonly archived?: number
+          }
+          readonly permission?: ReadonlyArray<{
+            readonly permission: string
+            readonly pattern: string
+            readonly action: "allow" | "deny" | "ask"
+          }>
+          readonly revert?: {
+            readonly messageID: string
+            readonly partID?: string
+            readonly snapshot?: string
+            readonly diff?: string
+          }
+        }
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.deleted"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly sessionID: string
+        readonly info: {
+          readonly id: string
+          readonly slug: string
+          readonly projectID: string
+          readonly workspaceID?: string
+          readonly directory: string
+          readonly path?: string
+          readonly parentID?: string
+          readonly summary?: {
+            readonly additions: number
+            readonly deletions: number
+            readonly files: number
+            readonly diffs?: ReadonlyArray<{
+              readonly file?: string
+              readonly patch?: string
+              readonly additions: number
+              readonly deletions: number
+              readonly status?: "added" | "deleted" | "modified"
+            }>
+          }
+          readonly cost?: number
+          readonly tokens?: {
+            readonly input: number
+            readonly output: number
+            readonly reasoning: number
+            readonly cache: { readonly read: number; readonly write: number }
+          }
+          readonly share?: { readonly url: string }
+          readonly title: string
+          readonly agent?: string
+          readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
+          readonly version: string
+          readonly metadata?: { readonly [x: string]: any }
+          readonly time: {
+            readonly created: number
+            readonly updated: number
+            readonly compacting?: number
+            readonly archived?: number
+          }
+          readonly permission?: ReadonlyArray<{
+            readonly permission: string
+            readonly pattern: string
+            readonly action: "allow" | "deny" | "ask"
+          }>
+          readonly revert?: {
+            readonly messageID: string
+            readonly partID?: string
+            readonly snapshot?: string
+            readonly diff?: string
+          }
+        }
+      }
+    }
   | {
       readonly id: string
       readonly metadata?: { readonly [x: string]: unknown }

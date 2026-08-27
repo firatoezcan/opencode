@@ -6,7 +6,16 @@ import { Question } from "./question"
 import { SessionEvent } from "./session-event"
 import { SessionV1 } from "./session-v1"
 
-const sessionDefinitions = Event.inventory(...SessionEvent.DurableDefinitions, ...Question.Event.DurableDefinitions)
+const currentSessionDefinitions = Event.inventory(
+  ...SessionEvent.DurableDefinitions,
+  ...Question.Event.DurableDefinitions,
+)
+const sessionDefinitions = Event.inventory(
+  SessionV1.Event.Created,
+  SessionV1.Event.Updated,
+  SessionV1.Event.Deleted,
+  ...currentSessionDefinitions,
+)
 
 export const SessionDurable = {
   definitions: Event.durable(sessionDefinitions),
@@ -16,5 +25,5 @@ export type SessionDurableEvent = typeof SessionDurable.schema.Type
 
 export const Durable = Event.durable([
   ...SessionV1.Event.Definitions.filter((definition) => definition.durable !== undefined),
-  ...sessionDefinitions,
+  ...currentSessionDefinitions,
 ])
