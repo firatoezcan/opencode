@@ -395,6 +395,58 @@ const replaySessionProjection = (id: SessionV2.ID) =>
     )
   })
 
+const recordPendingQuestion = Effect.fn("SessionRunnerTest.recordPendingQuestion")(function* (suffix: string) {
+  const events = yield* EventV2.Service
+  const assistantMessageID = SessionMessage.ID.make(`msg_${suffix}`)
+  const callID = `call_${suffix}`
+  const request: QuestionV2.Request = {
+    id: QuestionV2.ID.ascending(`que_${suffix}`),
+    sessionID,
+    questions: [
+      {
+        question: "Which option?",
+        header: "Option",
+        options: [{ label: "One", description: "First option" }],
+      },
+    ],
+    tool: { messageID: assistantMessageID, callID },
+  }
+  yield* events.publish(SessionEvent.Step.Started, {
+    sessionID,
+    assistantMessageID,
+    timestamp: yield* DateTime.now,
+    agent: "build",
+    model: { id: ModelV2.ID.make("fake-model"), providerID: ProviderV2.ID.make("fake") },
+  })
+  yield* events.publish(SessionEvent.Tool.Input.Started, {
+    sessionID,
+    timestamp: yield* DateTime.now,
+    assistantMessageID,
+    callID,
+    name: "question",
+  })
+  yield* events.publish(SessionEvent.Tool.Input.Ended, {
+    sessionID,
+    timestamp: yield* DateTime.now,
+    assistantMessageID,
+    callID,
+    text: JSON.stringify({ questions: request.questions }),
+  })
+  yield* events.publish(SessionEvent.Tool.Called, {
+    sessionID,
+    timestamp: yield* DateTime.now,
+    assistantMessageID,
+    callID,
+    tool: "question",
+    input: { questions: request.questions },
+    provider: { executed: false },
+  })
+  yield* events.publish(QuestionV2.Event.Asked, request, {
+    location: Location.Ref.make({ directory: AbsolutePath.make("/project") }),
+  })
+  return request
+})
+
 type FragmentKind = "text" | "reasoning" | "tool input"
 
 type FragmentFixture = {
@@ -3195,53 +3247,8 @@ describe("SessionRunnerLLM", () => {
         resume: false,
       })
       yield* SessionInput.promoteSteers((yield* Database.Service).db, events, sessionID, Number.MAX_SAFE_INTEGER)
-      const assistantMessageID = SessionMessage.ID.make("msg_recovered_question")
-      const callID = "call_recovered_question"
-      const request: QuestionV2.Request = {
-        id: QuestionV2.ID.ascending("que_recovered_question"),
-        sessionID,
-        questions: [
-          {
-            question: "Which option?",
-            header: "Option",
-            options: [{ label: "One", description: "First option" }],
-          },
-        ],
-        tool: { messageID: assistantMessageID, callID },
-      }
-      yield* events.publish(SessionEvent.Step.Started, {
-        sessionID,
-        assistantMessageID,
-        timestamp: yield* DateTime.now,
-        agent: "build",
-        model: { id: ModelV2.ID.make("fake-model"), providerID: ProviderV2.ID.make("fake") },
-      })
-      yield* events.publish(SessionEvent.Tool.Input.Started, {
-        sessionID,
-        timestamp: yield* DateTime.now,
-        assistantMessageID,
-        callID,
-        name: "question",
-      })
-      yield* events.publish(SessionEvent.Tool.Input.Ended, {
-        sessionID,
-        timestamp: yield* DateTime.now,
-        assistantMessageID,
-        callID,
-        text: JSON.stringify({ questions: request.questions }),
-      })
-      yield* events.publish(SessionEvent.Tool.Called, {
-        sessionID,
-        timestamp: yield* DateTime.now,
-        assistantMessageID,
-        callID,
-        tool: "question",
-        input: { questions: request.questions },
-        provider: { executed: false },
-      })
-      yield* events.publish(QuestionV2.Event.Asked, request, {
-        location: Location.Ref.make({ directory: AbsolutePath.make("/project") }),
-      })
+      const request = yield* recordPendingQuestion("recovered_question")
+      const callID = request.tool!.callID
       yield* events.publish(QuestionV2.Event.Replied, {
         sessionID,
         requestID: request.id,
@@ -3270,6 +3277,66 @@ describe("SessionRunnerLLM", () => {
           content: [{ type: "tool", id: callID, state: { status: "completed", structured: { answers: [["One"]] } } }],
         },
         { type: "assistant", content: [{ type: "text", text: "Continuing" }] },
+      ])
+      expect(yield* pendingQuestions.recoveries(sessionID)).toEqual([])
+    }),
+  )
+
+  it.live("fails a recovered question rejection without continuing the provider", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      const pendingQuestions = yield* QuestionV2.PendingRequests
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Reject after restart" }),
+        resume: false,
+      })
+      yield* SessionInput.promoteSteers((yield* Database.Service).db, events, sessionID, Number.MAX_SAFE_INTEGER)
+      const request = yield* recordPendingQuestion("recovered_rejection")
+      const tool = request.tool!
+      yield* events.publish(QuestionV2.Event.Rejected, { sessionID, requestID: request.id })
+      requests.length = 0
+      response = fragmentFixture("text", "text-after-rejection", ["Must not continue"]).completeEvents
+      const failed = yield* events
+        .subscribe(SessionEvent.Tool.Failed)
+        .pipe(
+          Stream.filter((event) => event.data.callID === tool.callID),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        )
+
+      yield* session.wake(sessionID)
+      yield* Fiber.join(failed).pipe(
+        Effect.timeoutOrElse({
+          duration: "1 second",
+          orElse: () => Effect.fail(new Error("recovered question rejection did not fail its tool")),
+        }),
+      )
+      yield* Effect.gen(function* () {
+        while ((yield* session.active).has(sessionID)) yield* Effect.yieldNow
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: "1 second",
+          orElse: () => Effect.fail(new Error("recovered question rejection did not finish settlement")),
+        }),
+      )
+
+      expect(requests).toEqual([])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Reject after restart" },
+        {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id: tool.callID,
+              state: { status: "error", error: { type: "unknown", message: "Tool execution interrupted" } },
+            },
+          ],
+        },
       ])
       expect(yield* pendingQuestions.recoveries(sessionID)).toEqual([])
     }),

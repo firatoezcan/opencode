@@ -35,6 +35,21 @@ const question: QuestionV2.Info = {
   options: [{ label: "One", description: "First option" }],
 }
 
+const persistentQuestions = (filename: string) =>
+  AppNodeBuilder.build(
+    LayerNode.group([Database.node, EventV2.node, QuestionV2.node, QuestionV2.pendingRequestsNode]),
+    [
+      [Database.node, Database.layerFromPath(filename)],
+      [
+        Location.node,
+        Layer.succeed(
+          Location.Service,
+          Location.Service.of(location({ directory: AbsolutePath.make("/workspace") })),
+        ),
+      ],
+    ],
+  )
+
 const waitForAsk = Effect.fn("QuestionV2Test.waitForAsk")(function* (
   service: QuestionV2.Interface,
   input: QuestionV2.AskInput,
@@ -160,20 +175,6 @@ describe("QuestionV2", () => {
         (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
       )
       const filename = path.join(tmp.path, "questions.sqlite")
-      const persistentQuestions = () =>
-        AppNodeBuilder.build(
-          LayerNode.group([Database.node, EventV2.node, QuestionV2.node, QuestionV2.pendingRequestsNode]),
-          [
-            [Database.node, Database.layerFromPath(filename)],
-            [
-              Location.node,
-              Layer.succeed(
-                Location.Service,
-                Location.Service.of(location({ directory: AbsolutePath.make("/workspace") })),
-              ),
-            ],
-          ],
-        )
       const request: QuestionV2.Request = {
         id: QuestionV2.ID.ascending("que_restart_recovery"),
         sessionID,
@@ -182,7 +183,7 @@ describe("QuestionV2", () => {
       }
 
       yield* Effect.gen(function* () {
-        const context = yield* Layer.build(Layer.fresh(persistentQuestions()))
+        const context = yield* Layer.build(Layer.fresh(persistentQuestions(filename)))
         const events = Context.get(context, EventV2.Service)
         yield* events.publish(QuestionV2.Event.Asked, request, {
           location: Location.Ref.make({ directory: AbsolutePath.make("/workspace") }),
@@ -195,7 +196,7 @@ describe("QuestionV2", () => {
       }).pipe(Effect.scoped)
 
       const recovered = yield* Effect.gen(function* () {
-        const context = yield* Layer.build(Layer.fresh(persistentQuestions()))
+        const context = yield* Layer.build(Layer.fresh(persistentQuestions(filename)))
         const { db } = Context.get(context, Database.Service)
         const pending = Context.get(context, QuestionV2.PendingRequests)
         const types = yield* db
@@ -213,6 +214,59 @@ describe("QuestionV2", () => {
         EventV2.versionedType(QuestionV2.Event.Replied.type, 1),
       ])
       expect(recovered.sessions).toEqual([sessionID])
+    }),
+  )
+
+  it.live("rebuilds a recovered rejection for Session settlement", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const filename = path.join(tmp.path, "rejected-questions.sqlite")
+      const tool = { messageID: SessionMessage.ID.make("msg_rejected_recovery"), callID: "call_rejected_recovery" }
+      const request: QuestionV2.Request = {
+        id: QuestionV2.ID.ascending("que_rejected_recovery"),
+        sessionID,
+        questions: [question],
+        tool,
+      }
+
+      yield* Effect.gen(function* () {
+        const context = yield* Layer.build(Layer.fresh(persistentQuestions(filename)))
+        const events = Context.get(context, EventV2.Service)
+        yield* events.publish(QuestionV2.Event.Asked, request, {
+          location: Location.Ref.make({ directory: AbsolutePath.make("/workspace") }),
+        })
+      }).pipe(Effect.scoped)
+
+      const state = yield* Effect.gen(function* () {
+        const context = yield* Layer.build(Layer.fresh(persistentQuestions(filename)))
+        return yield* Context.get(context, QuestionV2.Service).reject(request.id)
+      }).pipe(Effect.scoped)
+
+      const recovered = yield* Effect.gen(function* () {
+        const context = yield* Layer.build(Layer.fresh(persistentQuestions(filename)))
+        const { db } = Context.get(context, Database.Service)
+        const pending = Context.get(context, QuestionV2.PendingRequests)
+        const service = Context.get(context, QuestionV2.Service)
+        const types = yield* db
+          .select({ type: EventTable.type })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, sessionID))
+          .orderBy(asc(EventTable.seq))
+          .all()
+          .pipe(Effect.orDie)
+        return { types, requests: yield* service.list(), recoveries: yield* pending.recoveries(sessionID) }
+      }).pipe(Effect.scoped)
+
+      expect(state).toBe("recovered")
+      expect(recovered.types.map((event) => event.type)).toEqual([
+        EventV2.versionedType(QuestionV2.Event.Asked.type, 1),
+        EventV2.versionedType(QuestionV2.Event.Rejected.type, 1),
+      ])
+      expect(recovered.requests).toEqual([])
+      expect(recovered.recoveries).toEqual([{ _tag: "Rejected", request: { ...request, tool } }])
     }),
   )
 
