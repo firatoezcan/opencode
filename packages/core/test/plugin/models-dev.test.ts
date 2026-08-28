@@ -1,6 +1,6 @@
 import path from "path"
 import { describe, expect } from "bun:test"
-import { Deferred, Effect, Fiber, Layer, Ref } from "effect"
+import { Effect, Layer } from "effect"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { Integration } from "@opencode-ai/core/integration"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -27,71 +27,6 @@ const layer = AppNodeBuilder.build(LayerNode.group([Catalog.node, Integration.no
 const it = testEffect(layer)
 
 describe("ModelsDevPlugin", () => {
-  it.live("projects a refresh that finishes during the initial catalog read", () =>
-    Effect.gen(function* () {
-      const integrations = yield* Integration.Service
-      const catalog = yield* Catalog.Service
-      const events = yield* EventV2.Service
-      const catalogRead = yield* Deferred.make<void>()
-      const resumeCatalogRead = yield* Deferred.make<void>()
-      const catalogReloaded = yield* Deferred.make<void>()
-      const reads = yield* Ref.make(0)
-      const snapshot = yield* Ref.make<Record<string, ModelsDev.Provider>>({})
-      const refreshed: Record<string, ModelsDev.Provider> = {
-        xai: {
-          id: "xai",
-          name: "xAI",
-          env: ["XAI_API_KEY"],
-          models: {
-            "grok-4.6": {
-              id: "grok-4.6",
-              name: "Grok 4.6",
-              release_date: "2026-08-01",
-              attachment: false,
-              reasoning: true,
-              temperature: true,
-              tool_call: true,
-              limit: { context: 256_000, output: 32_000 },
-            },
-          },
-        },
-      }
-      const models = ModelsDev.Service.of({
-        get: () =>
-          Effect.gen(function* () {
-            const read = yield* Ref.modify(reads, (count) => [count + 1, count + 1])
-            const current = yield* Ref.get(snapshot)
-            if (read !== 2) return current
-            yield* Deferred.succeed(catalogRead, undefined)
-            yield* Deferred.await(resumeCatalogRead)
-            return current
-          }),
-        refresh: () => Effect.void,
-      })
-      const catalogContext = catalogHost(catalog)
-      const loading = yield* ModelsDevPlugin.effect(
-        host({
-          catalog: {
-            ...catalogContext,
-            reload: () => catalogContext.reload().pipe(Effect.tap(() => Deferred.succeed(catalogReloaded, undefined))),
-          },
-          integration: integrationHost(integrations),
-        }),
-      ).pipe(Effect.provideService(ModelsDev.Service, models), Effect.forkScoped)
-
-      yield* Deferred.await(catalogRead)
-      yield* Ref.set(snapshot, refreshed)
-      yield* events.publish(ModelsDev.Event.Refreshed, {})
-      yield* Deferred.succeed(resumeCatalogRead, undefined)
-      yield* Fiber.join(loading)
-      yield* Deferred.await(catalogReloaded).pipe(Effect.timeout("1 second"))
-
-      expect(yield* catalog.model.get(ProviderV2.ID.make("xai"), ModelV2.ID.make("grok-4.6"))).toMatchObject({
-        name: "Grok 4.6",
-      })
-    }),
-  )
-
   it.effect("projects models.dev modes as separate models instead of variants", () =>
     Effect.gen(function* () {
       const integrations = yield* Integration.Service

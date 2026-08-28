@@ -121,10 +121,6 @@ export const ModelsDevPlugin = define({
   effect: Effect.fn(function* (ctx) {
     const modelsDev = yield* ModelsDev.Service
     const events = yield* EventV2.Service
-    yield* events.subscribe(ModelsDev.Event.Refreshed).pipe(
-      Stream.runForEach(() => ctx.integration.reload().pipe(Effect.andThen(ctx.catalog.reload()))),
-      Effect.forkScoped({ startImmediately: true }),
-    )
     yield* ctx.integration.transform(
       Effect.fn(function* (integrations) {
         const data = yield* modelsDev.get()
@@ -178,6 +174,10 @@ export const ModelsDevPlugin = define({
           }
         }
       }),
+    )
+    yield* events.subscribe(ModelsDev.Event.Refreshed).pipe(
+      Stream.runForEach(() => ctx.integration.reload().pipe(Effect.andThen(ctx.catalog.reload()))),
+      Effect.forkScoped({ startImmediately: true }),
     )
   }),
 })
