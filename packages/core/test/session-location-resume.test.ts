@@ -31,12 +31,14 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { describe, expect } from "bun:test"
 import { DateTime, Effect, Layer, Stream } from "effect"
+import { Headers } from "effect/unstable/http"
 import { eq } from "drizzle-orm"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
 const providerID = ProviderV2.ID.make("ready-provider")
 const modelID = ModelV2.ID.make("ready-model")
+const uncredentialedModelID = ModelV2.ID.make("uncredentialed-model")
 const sessionID = SessionV2.ID.make("ses_workspace_location_resume")
 
 const catalog = {
@@ -50,6 +52,17 @@ const catalog = {
       [modelID]: {
         id: modelID,
         name: "Ready Model",
+        release_date: "2026-01-01",
+        attachment: false,
+        reasoning: false,
+        temperature: true,
+        tool_call: true,
+        limit: { context: 100_000, output: 1_024 },
+        modalities: { input: ["text"], output: ["text"] },
+      },
+      [uncredentialedModelID]: {
+        id: uncredentialedModelID,
+        name: "Uncredentialed Model",
         release_date: "2026-01-01",
         attachment: false,
         reasoning: false,
@@ -85,7 +98,7 @@ describe("workspace Location session resume", () => {
                 }),
               ),
             )
-            const modelStarts: string[] = []
+            const modelStarts: { model: string; authorization: string | undefined }[] = []
             const modelsDev = Layer.succeed(
               ModelsDev.Service,
               ModelsDev.Service.of({
@@ -96,8 +109,20 @@ describe("workspace Location session resume", () => {
             const llm = Layer.mock(LLMClient.Service, {
               stream: (request) =>
                 Stream.fromEffect(
-                  Effect.sync(() => {
-                    modelStarts.push(`${request.model.provider}/${request.model.id}`)
+                  Effect.gen(function* () {
+                    const headers = yield* request.model.route.auth
+                      .apply({
+                        request,
+                        method: "POST",
+                        url: "https://ready-provider.test/v1/chat/completions",
+                        body: "{}",
+                        headers: Headers.empty,
+                      })
+                      .pipe(Effect.orDie)
+                    modelStarts.push({
+                      model: `${request.model.provider}/${request.model.id}`,
+                      authorization: headers.authorization,
+                    })
                   }),
                 ).pipe(
                   Stream.flatMap(() =>
@@ -189,15 +214,12 @@ describe("workspace Location session resume", () => {
               expect(catalogModels.map((model) => `${model.providerID}/${model.id}`)).toContain(
                 `${providerID}/${modelID}`,
               )
-              expect(
-                catalogModels.find((model) => model.providerID === providerID && model.id === modelID)?.request.body
-                  .apiKey,
-              ).toBe("fixture-secret")
-
               yield* sessions.resume(sessionID)
 
               expect((yield* sessions.get(sessionID)).location).toEqual(targetLocation)
-              expect(modelStarts).toEqual([`${providerID}/${modelID}`])
+              expect(modelStarts).toEqual([
+                { model: `${providerID}/${modelID}`, authorization: "Bearer fixture-secret" },
+              ])
               expect(
                 (yield* db
                   .select({ type: EventTable.type })
@@ -212,7 +234,7 @@ describe("workspace Location session resume", () => {
               yield* sessions.create({
                 id: unavailableSessionID,
                 location: targetLocation,
-                model: { providerID, id: ModelV2.ID.make("missing-model") },
+                model: { providerID, id: uncredentialedModelID },
               })
               yield* sessions.prompt({
                 sessionID: unavailableSessionID,
@@ -231,8 +253,9 @@ describe("workspace Location session resume", () => {
               expect(failure).toMatchObject({
                 _tag: "SessionRunnerModel.ModelUnavailableError",
                 providerID,
-                modelID: "missing-model",
+                modelID: uncredentialedModelID,
               })
+              expect(modelStarts).toHaveLength(1)
               expect(failureTypes.slice(-2)).toEqual([
                 EventV2.versionedType(SessionEvent.Step.Started.type, 1),
                 EventV2.versionedType(SessionEvent.Step.Failed.type, 2),
