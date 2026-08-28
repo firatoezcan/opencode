@@ -6,25 +6,17 @@ import { SessionMessage } from "@opencode-ai/core/session/message"
 import { GenerationOptions, LLMEvent, Message } from "@opencode-ai/llm"
 import { DateTime, Effect, Stream } from "effect"
 
-const events = EventV2.Service.of({
+const events: Pick<EventV2.Interface, "publish"> = {
   publish: (definition, data) =>
     Effect.succeed({
       id: EventV2.ID.create(),
       type: definition.type,
       data,
     }),
-  subscribe: () => Stream.empty,
-  all: () => Stream.empty,
-  durable: () => Stream.empty,
-  listen: () => Effect.succeed(Effect.void),
-  project: () => Effect.void,
-  replay: () => Effect.void,
-  replayAll: () => Effect.succeed(undefined),
-  remove: () => Effect.void,
-  claim: () => Effect.void,
-})
+}
 
 const compact = async (input: {
+  readonly mode: "preflight" | "overflow"
   readonly context: number
   readonly output: number
   readonly history: string
@@ -46,24 +38,27 @@ const compact = async (input: {
     }),
   ]
   const summaryTokens: number[] = []
-  const result = await Effect.runPromise(
-    SessionCompaction.make({ events, config: [] }).compactIfNeeded({
-      sessionID: SessionV2.ID.make("ses_compaction_output_budget"),
-      entries: messages.map((message, seq) => ({ message, seq })),
-      limits: { context: input.context, output: input.output },
-      request: {
-        system: [],
-        messages: messages.map((message) => Message.user(message.text)),
-        tools: [],
-        generation:
-          input.maxTokens === undefined ? undefined : GenerationOptions.make({ maxTokens: input.maxTokens }),
-      },
-      summarize: (_prompt, maxTokens) => {
-        summaryTokens.push(maxTokens)
-        return Stream.make(LLMEvent.textDelta({ id: "summary", text: "summary" }))
-      },
-    }),
-  )
+  const compaction = SessionCompaction.make({ events, config: [] })
+  const compactionInput = {
+    sessionID: SessionV2.ID.make("ses_compaction_output_budget"),
+    entries: messages.map((message, seq) => ({ message, seq })),
+    limits: { context: input.context, output: input.output },
+    request: {
+      system: [],
+      messages: messages.map((message) => Message.user(message.text)),
+      tools: [],
+      generation: input.maxTokens === undefined ? undefined : GenerationOptions.make({ maxTokens: input.maxTokens }),
+    },
+    summarize: (_prompt: string, maxTokens: number) => {
+      summaryTokens.push(maxTokens)
+      return Stream.make(LLMEvent.textDelta({ id: "summary", text: "summary" }))
+    },
+  }
+  const effect =
+    input.mode === "preflight"
+      ? compaction.compactIfNeeded(compactionInput)
+      : compaction.compactAfterOverflow(compactionInput)
+  const result = await Effect.runPromise(effect)
   return { result, summaryTokens }
 }
 
@@ -114,11 +109,13 @@ test("compaction describes tool media without embedding base64", () => {
 
 test("compaction reserves explicit generation budgets, not catalog output capability", async () => {
   const ordinary = await compact({
+    mode: "preflight",
     context: 500_000,
     output: 500_000,
     history: "a".repeat(120_000),
   })
   const explicit = await compact({
+    mode: "preflight",
     context: 100_000,
     output: 100_000,
     history: "a".repeat(160_000),
@@ -128,5 +125,26 @@ test("compaction reserves explicit generation budgets, not catalog output capabi
   expect([ordinary, explicit]).toEqual([
     { result: false, summaryTokens: [] },
     { result: true, summaryTokens: [4_096] },
+  ])
+})
+
+test("overflow compaction gives the summary its own capability-bounded output budget", async () => {
+  const smallTriggerBudget = await compact({
+    mode: "overflow",
+    context: 100_000,
+    output: 100_000,
+    history: "a".repeat(160_000),
+    maxTokens: 512,
+  })
+  const lowOutputCapability = await compact({
+    mode: "overflow",
+    context: 100_000,
+    output: 2_048,
+    history: "a".repeat(160_000),
+  })
+
+  expect([smallTriggerBudget, lowOutputCapability]).toEqual([
+    { result: true, summaryTokens: [4_096] },
+    { result: true, summaryTokens: [2_048] },
   ])
 })

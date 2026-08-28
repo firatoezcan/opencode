@@ -144,28 +144,24 @@ const it = testEffect(
 )
 
 test("AI SDK requests omit implicit output limits and preserve explicit limits", async () => {
-  const maxOutputTokens: Array<number | undefined> = []
   const language = new MockLanguageModelV3({
     provider: providerID,
     modelId: genericModelID,
-    doStream: async (options) => {
-      maxOutputTokens.push(options.maxOutputTokens)
-      return {
-        stream: simulateReadableStream({
-          chunks: [
-            {
-              type: "finish",
-              finishReason: { unified: "stop", raw: undefined },
-              logprobs: undefined,
-              usage: {
-                inputTokens: { total: 2, noCache: 2, cacheRead: undefined, cacheWrite: undefined },
-                outputTokens: { total: 0, text: 0, reasoning: undefined },
-              },
+    doStream: async () => ({
+      stream: simulateReadableStream({
+        chunks: [
+          {
+            type: "finish",
+            finishReason: { unified: "stop", raw: undefined },
+            logprobs: undefined,
+            usage: {
+              inputTokens: { total: 2, noCache: 2, cacheRead: undefined, cacheWrite: undefined },
+              outputTokens: { total: 0, text: 0, reasoning: undefined },
             },
-          ],
-        }),
-      }
-    },
+          },
+        ],
+      }),
+    }),
   })
   const model = ModelV2.Info.make({
     ...ModelV2.Info.empty(providerID, genericModelID),
@@ -188,7 +184,7 @@ test("AI SDK requests omit implicit output limits and preserve explicit limits",
     ),
   )
 
-  expect(maxOutputTokens).toEqual([undefined, 4_096])
+  expect(language.doStreamCalls.map((call) => call.maxOutputTokens)).toEqual([undefined, 4_096])
 })
 
 type SessionFixture = {

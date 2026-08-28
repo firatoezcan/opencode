@@ -66,7 +66,7 @@ type Settings = {
 }
 
 type Dependencies = {
-  readonly events: EventV2.Interface
+  readonly events: Pick<EventV2.Interface, "publish">
   readonly config: readonly Config.Entry[]
 }
 
