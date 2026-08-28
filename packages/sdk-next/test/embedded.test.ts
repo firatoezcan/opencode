@@ -53,7 +53,7 @@ test("embedded client uses the real router and handlers", async () => {
       )
       const wakeContext = yield* opencode.sessions.context({ sessionID })
       const event = yield* opencode.sessions
-        .events({ sessionID })
+        .events({ sessionID, after: 0 })
         .pipe(Stream.take(1), Stream.runHead, Effect.map(Option.getOrUndefined))
       const modelMessage = Option.fromNullishOr(context.find((message) => message.type === "model-switched")).pipe(
         Option.getOrThrow,

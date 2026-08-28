@@ -191,7 +191,7 @@ describe("SessionV2.create", () => {
     }),
   )
 
-  it.effect("omits legacy creation rows from the V2 Session event stream", () =>
+  it.effect("streams synchronized Session lifecycle events", () =>
     Effect.gen(function* () {
       const session = yield* SessionV2.Service
       const events = yield* EventV2.Service
@@ -203,8 +203,8 @@ describe("SessionV2.create", () => {
       expect(
         Array.from(yield* session.events({ sessionID: created.id }).pipe(Stream.take(2), Stream.runCollect)),
       ).toMatchObject([
+        { durable: { seq: 0 }, type: SessionV1.Event.Created.type },
         { durable: { seq: 1 }, type: "session.next.prompt.admitted", data: { prompt: { text: "Hello" } } },
-        { durable: { seq: 2 }, type: "session.next.prompted" },
       ])
     }),
   )
@@ -230,9 +230,9 @@ describe("SessionV2.create", () => {
       yield* session.switchAgent({ sessionID: created.id, agent: "plan" })
 
       const streamed = Array.from(
-        yield* session.events({ sessionID: created.id }).pipe(Stream.take(1), Stream.runCollect),
+        yield* session.events({ sessionID: created.id, after: 0 }).pipe(Stream.take(1), Stream.runCollect),
       )
-      const history = yield* session.history({ sessionID: created.id, limit: 10 })
+      const history = yield* session.history({ sessionID: created.id, after: 0, limit: 10 })
 
       expect(streamed).toMatchObject([{ type: QuestionV2.Event.Asked.type, data: request }])
       expect(history.events.map((event) => event.type)).toEqual([
@@ -365,7 +365,9 @@ describe("SessionV2.create", () => {
 
       expect(yield* session.get(created.id)).toMatchObject({ agent: "plan" })
       expect(
-        Array.from(yield* session.events({ sessionID: created.id }).pipe(Stream.take(1), Stream.runCollect)),
+        Array.from(
+          yield* session.events({ sessionID: created.id, after: 0 }).pipe(Stream.take(1), Stream.runCollect),
+        ),
       ).toMatchObject([{ type: "session.next.agent.switched", data: { agent: "plan" } }])
     }),
   )
@@ -379,7 +381,9 @@ describe("SessionV2.create", () => {
 
       expect(yield* session.get(created.id)).toMatchObject({ title: "Review the generated client" })
       expect(
-        Array.from(yield* session.events({ sessionID: created.id }).pipe(Stream.take(1), Stream.runCollect)),
+        Array.from(
+          yield* session.events({ sessionID: created.id, after: 0 }).pipe(Stream.take(1), Stream.runCollect),
+        ),
       ).toMatchObject([{ type: "session.next.title.updated", data: { title: "Review the generated client" } }])
     }),
   )
@@ -412,7 +416,9 @@ describe("SessionV2.create", () => {
 
       expect(yield* session.get(created.id)).toMatchObject({ model })
       expect(
-        Array.from(yield* session.events({ sessionID: created.id }).pipe(Stream.take(1), Stream.runCollect)),
+        Array.from(
+          yield* session.events({ sessionID: created.id, after: 0 }).pipe(Stream.take(1), Stream.runCollect),
+        ),
       ).toMatchObject([{ type: "session.next.model.switched", data: { model } }])
     }),
   )
