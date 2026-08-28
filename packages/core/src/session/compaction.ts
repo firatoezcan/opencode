@@ -176,7 +176,7 @@ export const make = (dependencies: Dependencies) => {
   const compactAfterOverflow = Effect.fn("SessionCompaction.compactAfterOverflow")(function* (input: Input) {
     const context = input.limits.context
     if (context === undefined || context <= 0) return false
-    const output = input.request.generation?.maxTokens ?? input.limits.output ?? 0
+    const output = input.request.generation?.maxTokens ?? 0
     const selected = select(input.entries, config.tokens)
     const previousSummary = input.entries.find((entry) => entry.message.type === "compaction")?.message
     if (!selected || (selected.head.length === 0 && previousSummary?.type !== "compaction")) return false
@@ -221,7 +221,7 @@ export const make = (dependencies: Dependencies) => {
     if (!config.auto) return false
     const context = input.limits.context
     if (context === undefined || context <= 0) return false
-    const output = input.request.generation?.maxTokens ?? input.limits.output ?? 0
+    const output = input.request.generation?.maxTokens ?? 0
     if (
       estimate({ system: input.request.system, messages: input.request.messages, tools: input.request.tools }) <=
       context - Math.max(output, config.buffer)

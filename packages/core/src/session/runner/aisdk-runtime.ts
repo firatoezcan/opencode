@@ -212,7 +212,7 @@ export const streamAISDK = (model: ModelV2.Info, language: LanguageModelV3, requ
             abortSignal: controller.signal,
             headers: { ...model.request.headers, ...request.http?.headers },
             providerOptions: providerOptions(model, language, request),
-            maxOutputTokens: generation?.maxTokens ?? (model.limit.output || undefined),
+            maxOutputTokens: generation?.maxTokens,
             temperature: generation?.temperature,
             topP: generation?.topP,
             topK: generation?.topK,
