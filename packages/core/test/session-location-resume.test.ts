@@ -1,5 +1,7 @@
 import { LLMClient } from "@opencode-ai/llm/route"
 import { LLMEvent } from "@opencode-ai/llm"
+import fs from "node:fs/promises"
+import path from "node:path"
 import { Database } from "@opencode-ai/core/database/database"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -71,6 +73,18 @@ describe("workspace Location session resume", () => {
       ).pipe(
         Effect.flatMap(([source, target]) =>
           Effect.gen(function* () {
+            yield* Effect.promise(() =>
+              fs.writeFile(
+                path.join(target.path, "opencode.json"),
+                JSON.stringify({
+                  provider: {
+                    [providerID]: {
+                      models: { [modelID]: { options: { apiKey: "fixture-secret" } } },
+                    },
+                  },
+                }),
+              ),
+            )
             const modelStarts: string[] = []
             const modelsDev = Layer.succeed(
               ModelsDev.Service,
@@ -175,6 +189,10 @@ describe("workspace Location session resume", () => {
               expect(catalogModels.map((model) => `${model.providerID}/${model.id}`)).toContain(
                 `${providerID}/${modelID}`,
               )
+              expect(
+                catalogModels.find((model) => model.providerID === providerID && model.id === modelID)?.request.body
+                  .apiKey,
+              ).toBe("fixture-secret")
 
               yield* sessions.resume(sessionID)
 
