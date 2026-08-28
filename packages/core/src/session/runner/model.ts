@@ -191,22 +191,24 @@ export const locationLayer = Layer.effect(
     const integrations = yield* Integration.Service
     return Service.of({
       resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session) {
-        // Location plugins populate and filter the catalog asynchronously during layer startup.
         const defaultModel = session.model ? undefined : yield* catalog.model.default()
         const selected = session.model
-          ? (yield* catalog.model.available()).find(
-              (model) => model.providerID === session.model?.providerID && model.id === session.model.id,
-            )
+          ? yield* catalog.model.get(session.model.providerID, session.model.id)
           : defaultModel && executable(defaultModel)
             ? defaultModel
             : (yield* catalog.model.available()).find(executable)
-        if (!selected && session.model)
+        if ((!selected || !selected.enabled) && session.model)
           return yield* new ModelUnavailableError({
             providerID: session.model.providerID,
             modelID: session.model.id,
           })
         if (!selected) return yield* new ModelNotSelectedError({ sessionID: session.id })
         const provider = yield* catalog.provider.get(selected.providerID)
+        if (provider?.disabled && session.model)
+          return yield* new ModelUnavailableError({
+            providerID: session.model.providerID,
+            modelID: session.model.id,
+          })
         const connection = yield* integrations.connection.active(
           provider?.integrationID ?? Integration.ID.make(selected.providerID),
         )

@@ -66,7 +66,8 @@ describe("workspace Location session resume", () => {
     () =>
       Effect.acquireRelease(
         Effect.promise(() => Promise.all([tmpdir(), tmpdir()])),
-        (dirs) => Effect.promise(() => Promise.all(dirs.map((dir) => dir[Symbol.asyncDispose]())).then(() => undefined)),
+        (dirs) =>
+          Effect.promise(() => Promise.all(dirs.map((dir) => dir[Symbol.asyncDispose]())).then(() => undefined)),
       ).pipe(
         Effect.flatMap(([source, target]) =>
           Effect.gen(function* () {
@@ -104,7 +105,10 @@ describe("workspace Location session resume", () => {
               [LayerNodePlatform.llmClient, llm],
               [PermissionV2.node, Layer.mock(PermissionV2.Service, {})],
               [ProjectV2.node, project],
-              [SkillGuidance.node, Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })],
+              [
+                SkillGuidance.node,
+                Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) }),
+              ],
               [
                 ReferenceGuidance.node,
                 Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) }),
@@ -185,6 +189,36 @@ describe("workspace Location session resume", () => {
                   .all()
                   .pipe(Effect.orDie)).map((event) => event.type),
               ).toContain(EventV2.versionedType(SessionEvent.Step.Started.type, 1))
+
+              const unavailableSessionID = SessionV2.ID.make("ses_workspace_location_unavailable")
+              yield* sessions.create({
+                id: unavailableSessionID,
+                location: targetLocation,
+                model: { providerID, id: ModelV2.ID.make("missing-model") },
+              })
+              yield* sessions.prompt({
+                sessionID: unavailableSessionID,
+                prompt: Prompt.make({ text: "Fail at the durable step boundary." }),
+                resume: false,
+              })
+              const failure = yield* sessions.resume(unavailableSessionID).pipe(Effect.flip)
+              const failureTypes = (yield* db
+                .select({ type: EventTable.type })
+                .from(EventTable)
+                .where(eq(EventTable.aggregate_id, unavailableSessionID))
+                .orderBy(EventTable.seq)
+                .all()
+                .pipe(Effect.orDie)).map((event) => event.type)
+
+              expect(failure).toMatchObject({
+                _tag: "SessionRunnerModel.ModelUnavailableError",
+                providerID,
+                modelID: "missing-model",
+              })
+              expect(failureTypes.slice(-2)).toEqual([
+                EventV2.versionedType(SessionEvent.Step.Started.type, 1),
+                EventV2.versionedType(SessionEvent.Step.Failed.type, 2),
+              ])
             }).pipe(Effect.provide(layer))
           }),
         ),
