@@ -1,5 +1,66 @@
 import { expect, test } from "bun:test"
+import { EventV2 } from "@opencode-ai/core/event"
+import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionCompaction } from "@opencode-ai/core/session/compaction"
+import { SessionMessage } from "@opencode-ai/core/session/message"
+import { GenerationOptions, LLMEvent, Message } from "@opencode-ai/llm"
+import { DateTime, Effect, Stream } from "effect"
+
+const events: Pick<EventV2.Interface, "publish"> = {
+  publish: (definition, data) =>
+    Effect.succeed({
+      id: EventV2.ID.create(),
+      type: definition.type,
+      data,
+    }),
+}
+
+const compact = async (input: {
+  readonly mode: "preflight" | "overflow"
+  readonly context: number
+  readonly output: number
+  readonly history: string
+  readonly maxTokens?: number
+}) => {
+  const created = DateTime.makeUnsafe(0)
+  const messages = [
+    SessionMessage.User.make({
+      id: SessionMessage.ID.create(),
+      type: "user",
+      text: input.history,
+      time: { created },
+    }),
+    SessionMessage.User.make({
+      id: SessionMessage.ID.create(),
+      type: "user",
+      text: "current request",
+      time: { created },
+    }),
+  ]
+  const summaryTokens: number[] = []
+  const compaction = SessionCompaction.make({ events, config: [] })
+  const compactionInput = {
+    sessionID: SessionV2.ID.make("ses_compaction_output_budget"),
+    entries: messages.map((message, seq) => ({ message, seq })),
+    limits: { context: input.context, output: input.output },
+    request: {
+      system: [],
+      messages: messages.map((message) => Message.user(message.text)),
+      tools: [],
+      generation: input.maxTokens === undefined ? undefined : GenerationOptions.make({ maxTokens: input.maxTokens }),
+    },
+    summarize: (_prompt: string, maxTokens: number) => {
+      summaryTokens.push(maxTokens)
+      return Stream.make(LLMEvent.textDelta({ id: "summary", text: "summary" }))
+    },
+  }
+  const effect =
+    input.mode === "preflight"
+      ? compaction.compactIfNeeded(compactionInput)
+      : compaction.compactAfterOverflow(compactionInput)
+  const result = await Effect.runPromise(effect)
+  return { result, summaryTokens }
+}
 
 test("compaction prompt preserves detailed work state and relevant files", () => {
   const prompt = SessionCompaction.buildPrompt({ context: ["conversation history"] })
@@ -44,4 +105,46 @@ test("compaction describes tool media without embedding base64", () => {
 
   expect(serialized).toBe("Image read successfully\n[Attached image/png: pixel.png]")
   expect(serialized).not.toContain(base64)
+})
+
+test("compaction reserves explicit generation budgets, not catalog output capability", async () => {
+  const ordinary = await compact({
+    mode: "preflight",
+    context: 500_000,
+    output: 500_000,
+    history: "a".repeat(120_000),
+  })
+  const explicit = await compact({
+    mode: "preflight",
+    context: 100_000,
+    output: 100_000,
+    history: "a".repeat(160_000),
+    maxTokens: 64_000,
+  })
+
+  expect([ordinary, explicit]).toEqual([
+    { result: false, summaryTokens: [] },
+    { result: true, summaryTokens: [4_096] },
+  ])
+})
+
+test("overflow compaction gives the summary its own capability-bounded output budget", async () => {
+  const smallTriggerBudget = await compact({
+    mode: "overflow",
+    context: 100_000,
+    output: 100_000,
+    history: "a".repeat(160_000),
+    maxTokens: 512,
+  })
+  const lowOutputCapability = await compact({
+    mode: "overflow",
+    context: 100_000,
+    output: 2_048,
+    history: "a".repeat(160_000),
+  })
+
+  expect([smallTriggerBudget, lowOutputCapability]).toEqual([
+    { result: true, summaryTokens: [4_096] },
+    { result: true, summaryTokens: [2_048] },
+  ])
 })
