@@ -125,9 +125,10 @@ export class TransportReason extends Schema.Class<TransportReason>("LLM.Error.Tr
   kind: Schema.optional(Schema.String),
   url: Schema.optional(Schema.String),
   http: Schema.optional(HttpContext),
+  shouldRetry: Schema.optional(Schema.Boolean),
 }) {
   get retryable() {
-    return false
+    return this.shouldRetry ?? false
   }
 }
 

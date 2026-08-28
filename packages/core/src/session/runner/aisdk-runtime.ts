@@ -6,11 +6,8 @@ import {
   type SharedV3ProviderOptions,
 } from "@ai-sdk/provider"
 import {
-  InvalidRequestReason,
-  LLMError,
   LLMRequest,
-  UnknownProviderReason,
-  isContextOverflow,
+  fromAISDKError,
   type ContentPart,
   type ProviderOptions,
   type ToolContent,
@@ -19,11 +16,10 @@ import {
 import { AISDKAdapter } from "../../aisdk-adapter"
 import { ModelV2 } from "../../model"
 import { Effect, Stream } from "effect"
-import { jsonSchema, streamText, tool, type ModelMessage, type ToolResultPart as AISDKToolResultPart } from "ai"
+import { jsonSchema, streamText, tool, type ModelMessage, type ToolModelMessage } from "ai"
 
-export type Request = Omit<LLMRequest.Input, "model">
-
-const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
+export type AISDKRequest = Omit<LLMRequest.Input, "model">
+type AISDKToolResultPart = Extract<ToolModelMessage["content"][number], { readonly type: "tool-result" }>
 
 const json = (value: unknown): JSONValue => {
   const encoded = JSON.stringify(value)
@@ -135,7 +131,7 @@ const assistantPart = (part: ContentPart) => {
   }
 }
 
-const messages = (request: Request): ModelMessage[] =>
+const messages = (request: AISDKRequest): ModelMessage[] =>
   request.messages.map((item) => {
     switch (item.role) {
       case "system":
@@ -164,7 +160,7 @@ const messages = (request: Request): ModelMessage[] =>
     }
   })
 
-const providerOptions = (model: ModelV2.Info, language: LanguageModelV3, request: Request) => {
+const providerOptions = (model: ModelV2.Info, language: LanguageModelV3, request: AISDKRequest) => {
   const body = Object.fromEntries(Object.entries(model.request.body).filter(([key]) => key !== "apiKey"))
   const http = request.http?.body ?? {}
   if (Object.keys(body).length === 0 && Object.keys(http).length === 0) return aisdkOptions(request.providerOptions)
@@ -175,19 +171,9 @@ const providerOptions = (model: ModelV2.Info, language: LanguageModelV3, request
   })
 }
 
-const failure = (error: unknown) => {
-  if (error instanceof LLMError) return error
-  const detail = message(error)
-  return new LLMError({
-    module: "ai-sdk",
-    method: "streamText",
-    reason: isContextOverflow(detail)
-      ? new InvalidRequestReason({ message: detail, classification: "context-overflow" })
-      : new UnknownProviderReason({ message: detail }),
-  })
-}
+const failure = (error: unknown) => fromAISDKError(error, { module: "ai-sdk", method: "streamText" })
 
-export const stream = (model: ModelV2.Info, language: LanguageModelV3, request: Request) =>
+export const streamAISDK = (model: ModelV2.Info, language: LanguageModelV3, request: AISDKRequest) =>
   Stream.scoped(
     Stream.unwrap(
       Effect.acquireRelease(

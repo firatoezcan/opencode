@@ -267,21 +267,19 @@ const available = provider.enabled !== false && model.enabled
 
 ## Current Session Runner Adaptation
 
-The first local V2 Session runner waits for Location plugin boot, then resolves an explicit Session model without silently falling back. Without an explicit model it uses a supported Location catalog default, then falls back to the first available model with a supported route, and otherwise fails with `SessionRunnerModel.ModelNotSelectedError`. Its native adaptation surface is deliberately narrow:
+The local V2 Session runner waits for Location plugin boot, then resolves an explicit Session model without silently changing models. Without an explicit model, it uses an executable Location catalog default or the first executable available model. If neither exists, it fails with `SessionRunnerModel.ModelNotSelectedError`.
+
+Runtime selection keeps catalog models on a native route when `SessionRunnerModel.fromCatalogModel` can map them:
 
 ```text
-openai/responses over HTTP
-openai/completions for OpenAI Chat
-openai/completions for OpenAI-compatible Chat
-anthropic/messages
 aisdk:@ai-sdk/openai
 aisdk:@ai-sdk/openai-compatible with an explicit URL
 aisdk:@ai-sdk/anthropic
 ```
 
-Native endpoint URLs are complete endpoint URLs and are split into base URL plus request path when building an LLM route. AI SDK endpoint URLs remain base URLs. The adapter preserves model headers and body options, environment-backed provider credentials, direct model API keys, and selected Session variant overlays.
+Other `aisdk` catalog models use `AISDK.Service.language` and the generic AI SDK runtime. Both runtimes emit the shared `LLMEvent` contract consumed by Session persistence. The resolved active Integration credential, model headers and body options, endpoint base URL, and selected Session variant reach the owner that constructs the chosen runtime.
 
-Unsupported routes fail explicitly with `SessionRunnerModel.UnsupportedEndpointError`. In particular, `openai/responses` with WebSocket transport must not silently downgrade to HTTP. Google, Azure, Bedrock, OpenRouter-specific behavior, GitHub Copilot, Vertex, gateway adapters, and signed authentication remain future provider slices.
+Catalog APIs that are neither `aisdk` nor natively mapped fail with `SessionRunnerModel.UnsupportedApiError`.
 
 ## Plugin Interface
 

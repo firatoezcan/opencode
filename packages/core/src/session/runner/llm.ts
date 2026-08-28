@@ -44,12 +44,12 @@ import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
-import * as AISDKRuntime from "./aisdk-runtime"
+import { streamAISDK, type AISDKRequest } from "./aisdk-runtime"
 
 type Runtime = {
   readonly model: { readonly id: string; readonly provider: string }
   readonly limits: { readonly context?: number; readonly output?: number }
-  readonly stream: (request: AISDKRuntime.Request) => Stream.Stream<LLMEvent, LLMError>
+  readonly stream: (request: AISDKRequest) => Stream.Stream<LLMEvent, LLMError>
 }
 
 /**
@@ -128,18 +128,14 @@ const layer = Layer.effect(
     const resolveRuntime = Effect.fn("SessionRunner.resolveRuntime")(function* (resolved: SessionRunnerModel.Resolved) {
       if (resolved.type === "native") return nativeRuntime(resolved.model)
       const model = resolved.model
-      if (SessionRunnerModel.supported(model)) return nativeRuntime(yield* SessionRunnerModel.fromCatalogModel(model))
-      if (model.api.type !== "aisdk")
-        return yield* new SessionRunnerModel.UnsupportedApiError({
-          providerID: model.providerID,
-          modelID: model.id,
-          api: model.api.type,
-        })
+      const native = yield* SessionRunnerModel.fromCatalogModel(model).pipe(Effect.result)
+      if (native._tag === "Success") return nativeRuntime(native.success)
+      if (model.api.type !== "aisdk") return yield* native.failure
       const language = yield* aisdk.language(model)
       return {
         model: { id: model.id, provider: model.providerID },
         limits: model.limit,
-        stream: (request) => AISDKRuntime.stream(model, language, request),
+        stream: (request) => streamAISDK(model, language, request),
       } satisfies Runtime
     })
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
@@ -237,7 +233,7 @@ const layer = Layer.effect(
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
-      const request: AISDKRuntime.Request = {
+      const request: AISDKRequest = {
         http: HttpOptions.make({
           headers: {
             "x-session-affinity": session.id,

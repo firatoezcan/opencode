@@ -1,8 +1,7 @@
+import { APICallError } from "@ai-sdk/provider"
 import { AISDK } from "@opencode-ai/core/aisdk"
-import { AgentV2 } from "@opencode-ai/core/agent"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { Config } from "@opencode-ai/core/config"
-import { Credential } from "@opencode-ai/core/credential"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
@@ -20,6 +19,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import { SessionRunner } from "@opencode-ai/core/session/runner"
@@ -28,6 +28,7 @@ import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { Snapshot } from "@opencode-ai/core/snapshot"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
+import { LLMEvent, ModelID } from "@opencode-ai/llm"
 import { LLMClient } from "@opencode-ai/llm/route"
 import { describe, expect } from "bun:test"
 import { eq } from "drizzle-orm"
@@ -38,12 +39,15 @@ import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
 const providerID = ProviderV2.ID.make("aisdk-fixture")
-const modelID = ModelV2.ID.make("fixture-model")
 const integrationID = Integration.ID.make("aisdk-fixture")
-const resolved: ModelV2.Info[] = []
-const language = new MockLanguageModelV3({
+const genericModelID = ModelV2.ID.make("generic-model")
+const nativeModelID = ModelV2.ID.make("native-model")
+const nativeRouteModelID = ModelID.make("native-model")
+const rateLimitModelID = ModelV2.ID.make("rate-limit-model")
+
+const successfulLanguage = new MockLanguageModelV3({
   provider: providerID,
-  modelId: modelID,
+  modelId: genericModelID,
   doStream: async () => ({
     stream: simulateReadableStream({
       chunks: [
@@ -63,22 +67,60 @@ const language = new MockLanguageModelV3({
     }),
   }),
 })
+
+const rateLimitLanguage = new MockLanguageModelV3({
+  provider: providerID,
+  modelId: rateLimitModelID,
+  doStream: async () => ({
+    stream: simulateReadableStream({
+      chunks: [
+        {
+          type: "error",
+          error: new APICallError({
+            message: "Rate limited",
+            url: "https://provider.example/v1/responses",
+            requestBodyValues: {},
+            statusCode: 429,
+            responseHeaders: { "retry-after": "2", "x-request-id": "request-123" },
+            responseBody: '{"error":"rate limit"}',
+            isRetryable: true,
+          }),
+        },
+      ],
+    }),
+  }),
+})
+
 const aisdk = Layer.mock(AISDK.Service, {
   hook: {
-    sdk: () => Effect.succeed({ dispose: Effect.succeed(undefined) }),
-    language: () => Effect.succeed({ dispose: Effect.succeed(undefined) }),
+    sdk: () => Effect.succeed({ dispose: Effect.void }),
+    language: () => Effect.succeed({ dispose: Effect.void }),
   },
   runSDK: Effect.succeed,
   runLanguage: Effect.succeed,
   language: (model) =>
     Effect.sync(() => {
-      resolved.push(model)
-      return language
+      if (model.id === nativeModelID) throw new Error("native catalog model used the AI SDK runtime")
+      if (model.request.body.apiKey !== "fixture-secret")
+        throw new Error("active Integration credential was not applied")
+      return model.id === rateLimitModelID ? rateLimitLanguage : successfulLanguage
     }),
 })
+
 const llm = Layer.mock(LLMClient.Service, {
-  stream: () => Stream.die("native LLM runtime should not execute"),
+  stream: (request) =>
+    request.model.id === nativeRouteModelID
+      ? Stream.fromIterable([
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "native-text" }),
+          LLMEvent.textDelta({ id: "native-text", text: "Hello from native runtime." }),
+          LLMEvent.textEnd({ id: "native-text" }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+          LLMEvent.finish({ reason: "stop" }),
+        ])
+      : Stream.die("native LLM runtime should not execute"),
 })
+
 const permission = Layer.mock(PermissionV2.Service, {})
 const config = Layer.succeed(Config.Service, Config.Service.of({ entries: () => Effect.succeed([]) }))
 const systemContext = Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
@@ -100,100 +142,153 @@ const it = testEffect(
   ]),
 )
 
-describe("SessionRunnerLLM AI SDK", () => {
-  it.live("executes a catalog AI SDK model through a V2 Session", () =>
-    Effect.acquireRelease(
-      Effect.promise(() => tmpdir()),
-      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
-    ).pipe(
-      Effect.flatMap((dir) =>
-        Effect.gen(function* () {
-          resolved.length = 0
-          const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
-          const services = yield* LocationServiceMap.Service
-          yield* Effect.gen(function* () {
-            const integrations = yield* Integration.Service
-            yield* integrations.transform((editor) =>
-              editor.method.update({
-                integrationID,
-                method: { type: "key", label: "API key" },
-              }),
-            )
-            yield* integrations.connection.key({ integrationID, key: "fixture-secret" })
-            yield* Catalog.Service.use((catalog) =>
-              catalog.transform((editor) => {
-                editor.provider.update(providerID, (provider) => {
-                  provider.integrationID = integrationID
-                  provider.api = { type: "aisdk", package: "@ai-sdk/fixture" }
-                })
-                editor.model.update(providerID, modelID, (model) => {
-                  model.api = { type: "aisdk", package: "@ai-sdk/fixture", id: modelID }
-                  model.capabilities = { tools: true, input: ["text"], output: ["text"] }
-                  model.limit = { context: 100_000, output: 1_024 }
-                })
-              }),
-            )
-            expect(
-              (yield* Catalog.Service.use((catalog) => catalog.model.available())).map((model) => model.id),
-            ).toEqual([modelID])
+type SessionFixture = {
+  readonly sessionID: SessionV2.ID
+  readonly modelID: ModelV2.ID
+  readonly package: string
+  readonly url?: string
+}
 
-            const sessionID = SessionV2.ID.make("ses_runner_aisdk")
-            const { db } = yield* Database.Service
-            yield* db
-              .insert(ProjectTable)
-              .values({ id: Project.ID.global, worktree: location.directory, sandboxes: [] })
-              .onConflictDoNothing()
-              .run()
-              .pipe(Effect.orDie)
-            yield* db
-              .insert(SessionTable)
-              .values({
-                id: sessionID,
-                project_id: Project.ID.global,
-                slug: "test",
-                directory: location.directory,
-                title: "test",
-                version: "test",
-                model: { providerID, id: modelID },
+const runSession = (input: SessionFixture) =>
+  Effect.acquireRelease(
+    Effect.promise(() => tmpdir()),
+    (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+  ).pipe(
+    Effect.flatMap((dir) =>
+      Effect.gen(function* () {
+        const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+        const services = yield* LocationServiceMap.Service
+        return yield* Effect.gen(function* () {
+          const integrations = yield* Integration.Service
+          yield* integrations.transform((editor) =>
+            editor.method.update({ integrationID, method: { type: "key", label: "API key" } }),
+          )
+          yield* integrations.connection.key({ integrationID, key: "fixture-secret" })
+          yield* Catalog.Service.use((catalog) =>
+            catalog.transform((editor) => {
+              editor.provider.update(providerID, (provider) => {
+                provider.integrationID = integrationID
+                provider.api = { type: "aisdk", package: input.package }
               })
-              .run()
-              .pipe(Effect.orDie)
+              editor.model.update(providerID, input.modelID, (model) => {
+                model.api = {
+                  type: "aisdk",
+                  package: input.package,
+                  id: input.modelID,
+                  ...(input.url === undefined ? {} : { url: input.url }),
+                }
+                model.capabilities = { tools: true, input: ["text"], output: ["text"] }
+                model.limit = { context: 100_000, output: 1_024 }
+              })
+            }),
+          )
 
-            const session = yield* SessionV2.Service
-            yield* session.prompt({
-              sessionID,
-              prompt: Prompt.make({ text: "Say hello." }),
-              resume: false,
+          const { db } = yield* Database.Service
+          yield* db
+            .insert(ProjectTable)
+            .values({ id: Project.ID.global, worktree: location.directory, sandboxes: [] })
+            .onConflictDoNothing()
+            .run()
+            .pipe(Effect.orDie)
+          yield* db
+            .insert(SessionTable)
+            .values({
+              id: input.sessionID,
+              project_id: Project.ID.global,
+              slug: "test",
+              directory: location.directory,
+              title: "test",
+              version: "test",
+              model: { providerID, id: input.modelID },
             })
-            yield* SessionRunner.Service.use((runner) => runner.run({ sessionID, force: true }))
+            .run()
+            .pipe(Effect.orDie)
 
-            const messages = yield* session.context(sessionID)
-            expect(messages).toHaveLength(2)
-            expect(messages[1]).toMatchObject({
-              type: "assistant",
-              finish: "stop",
-              content: [{ type: "text", text: "Hello from AI SDK." }],
-            })
-            expect(resolved).toHaveLength(1)
-            expect(resolved[0]?.request.body.apiKey).toBe("fixture-secret")
-            expect(
-              (yield* db
-                .select({ type: EventTable.type })
-                .from(EventTable)
-                .where(eq(EventTable.aggregate_id, sessionID))
-                .orderBy(EventTable.seq)
-                .all()).map((event) => event.type),
-            ).toEqual([
-              "session.next.prompt.admitted.1",
-              "session.next.prompted.1",
-              "session.next.step.started.1",
-              "session.next.text.started.1",
-              "session.next.text.ended.1",
-              "session.next.step.ended.2",
-            ])
-          }).pipe(Effect.provide(services.get(location)))
-        }),
-      ),
+          const session = yield* SessionV2.Service
+          yield* session.prompt({
+            sessionID: input.sessionID,
+            prompt: Prompt.make({ text: "Say hello." }),
+            resume: false,
+          })
+          yield* SessionRunner.Service.use((runner) => runner.run({ sessionID: input.sessionID, force: true })).pipe(
+            Effect.exit,
+          )
+          const events = yield* db
+            .select({ type: EventTable.type, data: EventTable.data })
+            .from(EventTable)
+            .where(eq(EventTable.aggregate_id, input.sessionID))
+            .orderBy(EventTable.seq)
+            .all()
+            .pipe(Effect.orDie)
+          return { messages: yield* session.context(input.sessionID), events }
+        }).pipe(Effect.provide(services.get(location)))
+      }),
     ),
+  )
+
+describe("SessionRunnerLLM catalog runtimes", () => {
+  it.live("executes a generic AI SDK model through a V2 Session", () =>
+    Effect.gen(function* () {
+      const result = yield* runSession({
+        sessionID: SessionV2.ID.make("ses_runner_aisdk"),
+        modelID: genericModelID,
+        package: "@ai-sdk/fixture",
+      })
+
+      expect(result.messages).toMatchObject([
+        { type: "user" },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Hello from AI SDK." }] },
+      ])
+      expect(result.events.map((event) => event.type)).toEqual([
+        "session.next.prompt.admitted.1",
+        "session.next.prompted.1",
+        "session.next.step.started.1",
+        "session.next.text.started.1",
+        "session.next.text.ended.1",
+        "session.next.step.ended.2",
+      ])
+    }),
+  )
+
+  it.live("keeps a native-supported catalog model on the native runtime", () =>
+    Effect.gen(function* () {
+      const result = yield* runSession({
+        sessionID: SessionV2.ID.make("ses_runner_native"),
+        modelID: nativeModelID,
+        package: "@ai-sdk/openai",
+        url: "https://openai.example/v1",
+      })
+
+      expect(result.messages).toMatchObject([
+        { type: "user" },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Hello from native runtime." }] },
+      ])
+    }),
+  )
+
+  it.live("preserves AI SDK rate-limit details in V2 Session events", () =>
+    Effect.gen(function* () {
+      const result = yield* runSession({
+        sessionID: SessionV2.ID.make("ses_runner_aisdk_rate_limit"),
+        modelID: rateLimitModelID,
+        package: "@ai-sdk/fixture",
+      })
+      const retry = result.events.find((event) => event.type === EventV2.versionedType(SessionEvent.Retried.type, 1))
+
+      expect(result.messages).toMatchObject([
+        { type: "user" },
+        { type: "assistant", finish: "error", error: { message: "Rate limited" } },
+      ])
+      expect(retry?.data).toMatchObject({
+        attempt: 1,
+        error: {
+          message: "Rate limited",
+          statusCode: 429,
+          isRetryable: true,
+          responseHeaders: { "retry-after": "2", "x-request-id": "request-123" },
+          responseBody: '{"error":"rate limit"}',
+        },
+      })
+    }),
   )
 })

@@ -328,20 +328,4 @@ describe("SessionRunnerModel", () => {
       expect(failure.message).toBe("Unsupported API for test-provider/test-model: aisdk:@ai-sdk/google")
     }),
   )
-
-  it.effect("reports whether a catalog model has a supported native route", () =>
-    Effect.sync(() => {
-      expect(
-        SessionRunnerModel.supported(
-          model({ type: "aisdk", package: "@ai-sdk/openai", url: "https://openai.example/v1" }),
-        ),
-      ).toBe(true)
-      expect(
-        SessionRunnerModel.supported(
-          model({ type: "aisdk", package: "@ai-sdk/google", url: "https://google.example/v1" }),
-        ),
-      ).toBe(false)
-      expect(SessionRunnerModel.supported(model({ type: "native", settings: {} }))).toBe(false)
-    }),
-  )
 })

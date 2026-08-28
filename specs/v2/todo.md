@@ -21,7 +21,7 @@ through legacy `SessionPrompt.loop(...)`:
 - process-global `SessionExecution.resume(sessionID)` discovers Location from
   the Session read model
 - cached Location-scoped `SessionRunner` resolves one supported catalog model
-  and issues one explicit `llm.stream(request)` provider turn at a time
+  and issues one explicit selected-runtime provider turn at a time
 - durable V2 projections record text, reasoning, provider failures, tool calls,
   tool results, and assistant output
 - a scoped `ToolRegistry` advertises definitions and the first permission-checked

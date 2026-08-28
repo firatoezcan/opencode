@@ -543,6 +543,7 @@
       "name": "@opencode-ai/llm",
       "version": "1.18.22",
       "dependencies": {
+        "@ai-sdk/provider": "3.0.8",
         "@opencode-ai/schema": "workspace:*",
         "@smithy/eventstream-codec": "4.2.14",
         "@smithy/util-utf8": "4.2.2",

@@ -151,7 +151,6 @@ export const locationLayer = Layer.effect(
   Effect.gen(function* () {
     let sdkHooks: ((event: SDKEvent) => Effect.Effect<void> | void)[] = []
     let languageHooks: ((event: LanguageEvent) => Effect.Effect<void> | void)[] = []
-    const languages = new Map<string, LanguageModelV3>()
     const sdks = new Map<string, SDK>()
 
     const register = <Event>(
@@ -196,9 +195,6 @@ export const locationLayer = Layer.effect(
       runSDK: (event) => run(sdkHooks, event),
       runLanguage: (event) => run(languageHooks, event),
       language: Effect.fn("AISDK.language")(function* (model) {
-        const key = `${model.providerID}/${model.id}/${model.request.variant ?? "default"}`
-        const existing = languages.get(key)
-        if (existing) return existing
         if (model.api.type !== "aisdk")
           return yield* new InitError({
             providerID: model.providerID,
@@ -224,7 +220,6 @@ export const locationLayer = Layer.effect(
         const language = yield* Effect.sync(() => result.language ?? sdk.languageModel(model.api.id)).pipe(
           initError(model.providerID),
         )
-        languages.set(key, language)
         return language
       }),
     })

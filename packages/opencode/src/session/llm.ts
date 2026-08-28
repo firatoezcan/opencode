@@ -274,7 +274,7 @@ const live: Layer.Layer<
         "llm.model": input.model.id,
       })
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
-      // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
+      // The core adapter normalizes fullStream parts; LLMAISDK supplies legacy error policy.
       return {
         type: "ai-sdk" as const,
         result: streamText({
