@@ -68,9 +68,9 @@ const layer = Layer.effect(
     const policy = yield* Policy.Service
     const integrations = yield* Integration.Service
 
-    const available = (provider: ProviderV2.Info, integration: Integration.Info | undefined) => {
+    const available = (provider: ProviderV2.Info, integration: Integration.Info | undefined, apiKey: unknown) => {
       if (provider.disabled) return false
-      if (typeof provider.request.body.apiKey === "string") return true
+      if (typeof apiKey === "string") return true
       if (integration?.connections.length) return true
       return provider.integrationID === undefined && !integration
     }
@@ -184,7 +184,11 @@ const layer = Layer.effect(
         available: Effect.fn("CatalogV2.provider.available")(function* () {
           const active = new Map((yield* integrations.list()).map((integration) => [integration.id, integration]))
           return (yield* result.provider.all()).filter((provider) =>
-            available(provider, active.get(provider.integrationID ?? Integration.ID.make(provider.id))),
+            available(
+              provider,
+              active.get(provider.integrationID ?? Integration.ID.make(provider.id)),
+              provider.request.body.apiKey,
+            ),
           )
         }),
       },
@@ -208,23 +212,35 @@ const layer = Layer.effect(
         }),
 
         available: Effect.fn("CatalogV2.model.available")(function* () {
-          const providers = new Set((yield* result.provider.available()).map((provider) => provider.id))
-          return (yield* result.model.all()).filter((model) => providers.has(model.providerID) && model.enabled)
+          const active = new Map((yield* integrations.list()).map((integration) => [integration.id, integration]))
+          const providers = new Map((yield* result.provider.all()).map((provider) => [provider.id, provider]))
+          return (yield* result.model.all()).filter((model) => {
+            const provider = providers.get(model.providerID)
+            return (
+              model.enabled &&
+              provider !== undefined &&
+              available(
+                provider,
+                active.get(provider.integrationID ?? Integration.ID.make(provider.id)),
+                model.request.body.apiKey,
+              )
+            )
+          })
         }),
 
         default: Effect.fn("CatalogV2.model.default")(function* () {
+          const models = yield* result.model.available()
           const defaultModel = state.get().defaultModel
           if (defaultModel) {
-            const provider = yield* result.provider.get(defaultModel.providerID)
-            if (provider && (yield* result.provider.available()).some((item) => item.id === provider.id)) {
-              const model = yield* result.model.get(defaultModel.providerID, defaultModel.modelID)
-              if (model?.enabled) return model
-            }
+            const model = models.find(
+              (model) => model.providerID === defaultModel.providerID && model.id === defaultModel.modelID,
+            )
+            if (model) return model
           }
 
           return Option.getOrUndefined(
             pipe(
-              yield* result.model.available(),
+              models,
               Array.sortWith((item) => item.time.released, Order.flip(Order.Number)),
               Array.head,
             ),

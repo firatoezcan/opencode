@@ -193,22 +193,19 @@ export const locationLayer = Layer.effect(
       resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session) {
         const defaultModel = session.model ? undefined : yield* catalog.model.default()
         const selected = session.model
-          ? yield* catalog.model.get(session.model.providerID, session.model.id)
+          ? (yield* catalog.model.available()).find(
+              (model) => model.providerID === session.model?.providerID && model.id === session.model.id,
+            )
           : defaultModel && executable(defaultModel)
             ? defaultModel
             : (yield* catalog.model.available()).find(executable)
-        if ((!selected || !selected.enabled) && session.model)
+        if (!selected && session.model)
           return yield* new ModelUnavailableError({
             providerID: session.model.providerID,
             modelID: session.model.id,
           })
         if (!selected) return yield* new ModelNotSelectedError({ sessionID: session.id })
         const provider = yield* catalog.provider.get(selected.providerID)
-        if (provider?.disabled && session.model)
-          return yield* new ModelUnavailableError({
-            providerID: session.model.providerID,
-            modelID: session.model.id,
-          })
         const connection = yield* integrations.connection.active(
           provider?.integrationID ?? Integration.ID.make(selected.providerID),
         )
