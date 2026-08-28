@@ -2,6 +2,7 @@ export * as SessionRunner from "./index"
 
 import type { LLMError } from "@opencode-ai/llm"
 import { Context, Effect } from "effect"
+import type { AISDK } from "../../aisdk"
 import { SessionSchema } from "../schema"
 import type { ContextSnapshotDecodeError, MessageDecodeError } from "../error"
 import { SessionRunnerModel } from "./model"
@@ -10,6 +11,7 @@ import type { ToolOutputStore } from "../../tool-output-store"
 
 export type RunError =
   | LLMError
+  | AISDK.InitError
   | SessionRunnerModel.Error
   | MessageDecodeError
   | ContextSnapshotDecodeError

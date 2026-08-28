@@ -4,7 +4,6 @@ import {
   ToolOutput,
   ToolResultPart,
   type ContentPart,
-  type Model,
   type ProviderMetadata,
 } from "@opencode-ai/llm"
 import { SessionMessage } from "../message"
@@ -67,7 +66,12 @@ const toolResult = (tool: SessionMessage.AssistantTool, providerMetadata: Provid
   }
 }
 
-const assistant = (message: SessionMessage.Assistant, model: Model) => {
+export interface ModelIdentity {
+  readonly id: string
+  readonly provider: string
+}
+
+const assistant = (message: SessionMessage.Assistant, model: ModelIdentity) => {
   const sameModel =
     String(message.model.providerID) === String(model.provider) && String(message.model.id) === String(model.id)
   const reuseProviderMetadata = sameModel && message.error === undefined
@@ -112,7 +116,7 @@ const assistant = (message: SessionMessage.Assistant, model: Model) => {
   ]
 }
 
-function toLLMMessage(message: SessionMessage.Message, model: Model): Message[] {
+function toLLMMessage(message: SessionMessage.Message, model: ModelIdentity): Message[] {
   switch (message.type) {
     case "agent-switched":
     case "model-switched":
@@ -167,5 +171,5 @@ ${message.recent}
 }
 
 /** Translate projected V2 Session history into canonical @opencode-ai/llm context. */
-export const toLLMMessages = (messages: readonly SessionMessage.Message[], model: Model) =>
+export const toLLMMessages = (messages: readonly SessionMessage.Message[], model: ModelIdentity) =>
   messages.flatMap((message) => toLLMMessage(message, model))
