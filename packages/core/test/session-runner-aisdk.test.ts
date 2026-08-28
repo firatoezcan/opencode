@@ -23,14 +23,15 @@ import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import { SessionRunner } from "@opencode-ai/core/session/runner"
+import { streamAISDK, type AISDKRequest } from "@opencode-ai/core/session/runner/aisdk-runtime"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { Snapshot } from "@opencode-ai/core/snapshot"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
-import { LLMEvent, ModelID } from "@opencode-ai/llm"
+import { GenerationOptions, LLMEvent, Message, ModelID } from "@opencode-ai/llm"
 import { LLMClient } from "@opencode-ai/llm/route"
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { eq } from "drizzle-orm"
 import { Effect, Layer, Stream } from "effect"
 import { simulateReadableStream } from "ai"
@@ -141,6 +142,54 @@ const it = testEffect(
     [SessionExecution.node, SessionExecution.noopLayer],
   ]),
 )
+
+test("AI SDK requests omit implicit output limits and preserve explicit limits", async () => {
+  const maxOutputTokens: Array<number | undefined> = []
+  const language = new MockLanguageModelV3({
+    provider: providerID,
+    modelId: genericModelID,
+    doStream: async (options) => {
+      maxOutputTokens.push(options.maxOutputTokens)
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: undefined },
+              logprobs: undefined,
+              usage: {
+                inputTokens: { total: 2, noCache: 2, cacheRead: undefined, cacheWrite: undefined },
+                outputTokens: { total: 0, text: 0, reasoning: undefined },
+              },
+            },
+          ],
+        }),
+      }
+    },
+  })
+  const model = ModelV2.Info.make({
+    ...ModelV2.Info.empty(providerID, genericModelID),
+    api: { type: "aisdk", package: "@ai-sdk/fixture", id: genericModelID },
+    limit: { context: 500_000, output: 500_000 },
+  })
+  const request: AISDKRequest = {
+    system: [],
+    messages: [Message.user("Say hello.")],
+    tools: [],
+  }
+
+  await Effect.runPromise(Stream.runDrain(streamAISDK(model, language, request)))
+  await Effect.runPromise(
+    Stream.runDrain(
+      streamAISDK(model, language, {
+        ...request,
+        generation: GenerationOptions.make({ maxTokens: 4_096 }),
+      }),
+    ),
+  )
+
+  expect(maxOutputTokens).toEqual([undefined, 4_096])
+})
 
 type SessionFixture = {
   readonly sessionID: SessionV2.ID
