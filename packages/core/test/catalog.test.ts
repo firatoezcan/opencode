@@ -101,6 +101,35 @@ describe("CatalogV2", () => {
     }).pipe(Effect.provide(localCatalogLayer))
   })
 
+  it.effect("admits only model-scoped credentials without a provider connection", () => {
+    const integrationID = Integration.ID.make("gateway")
+    const providerID = ProviderV2.ID.make("remote")
+    const configuredModelID = ModelV2.ID.make("configured")
+    const uncredentialedModelID = ModelV2.ID.make("uncredentialed")
+    const localCatalogLayer = Layer.fresh(
+      AppNodeBuilder.build(LayerNode.group([Catalog.node, Credential.node, Integration.node]), [
+        [Location.node, locationLayer],
+      ]),
+    )
+
+    return Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      yield* (yield* Integration.Service).transform((editor) => editor.update(integrationID, () => {}))
+      yield* catalog.transform((editor) => {
+        editor.provider.update(providerID, (provider) => {
+          provider.integrationID = integrationID
+        })
+        editor.model.update(providerID, configuredModelID, (model) => {
+          model.request.body.apiKey = "model-secret"
+        })
+        editor.model.update(providerID, uncredentialedModelID, () => {})
+      })
+
+      expect(yield* catalog.provider.available()).toEqual([])
+      expect((yield* catalog.model.available()).map((model) => model.id)).toEqual([configuredModelID])
+    }).pipe(Effect.provide(localCatalogLayer))
+  })
+
   it.effect("projects environment connections without a catalog plugin", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => {
