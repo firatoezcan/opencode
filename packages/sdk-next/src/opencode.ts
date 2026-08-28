@@ -1,6 +1,7 @@
 import { OpenCode } from "@opencode-ai/client/effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
 import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { createEmbeddedRoutes } from "@opencode-ai/server/routes"
@@ -11,16 +12,18 @@ export const create = Effect.fn("OpenCode.create")(function* () {
   const scope = yield* Scope.Scope
   const memoMap = yield* Layer.makeMemoMap
   const context = yield* Layer.buildWithMemoMap(
-    AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, PermissionSaved.node])),
+    AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, LocationServiceMap.node, PermissionSaved.node])),
     memoMap,
     scope,
   )
   const tools = Context.get(context, ApplicationTools.Service)
+  const locations = Context.get(context, LocationServiceMap.Service)
   const permissions = Context.get(context, PermissionSaved.Service)
   const web = yield* Effect.acquireRelease(
     Effect.sync(() =>
       HttpRouter.toWebHandler(
         createEmbeddedRoutes().pipe(
+          HttpRouter.provideRequest(Layer.succeed(LocationServiceMap.Service, locations)),
           HttpRouter.provideRequest(Layer.succeed(PermissionSaved.Service, permissions)),
           Layer.provide(HttpServer.layerServices),
         ),
