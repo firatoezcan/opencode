@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
-import { describe, expect } from "bun:test"
-import { DateTime, Effect, Equal, Hash, Schema } from "effect"
+import { describe, expect, test } from "bun:test"
+import { DateTime, Deferred, Effect, Equal, Fiber, Hash, Layer, Option, Schema } from "effect"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import { define } from "@opencode-ai/plugin/v2/effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
@@ -17,6 +17,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 import { toolDefinitions } from "./lib/tool"
@@ -37,6 +38,45 @@ const it = testEffect(
 )
 
 describe("LocationServiceMap", () => {
+  test("waits for internal plugin boot before publishing workspace location services", async () => {
+    await using dir = await tmpdir()
+    const effect = Effect.gen(function* () {
+      const modelsRequested = yield* Deferred.make<void>()
+      const modelsReady = yield* Deferred.make<void>()
+      const locationAvailable = yield* Deferred.make<void>()
+      const modelsDev = Layer.succeed(
+        ModelsDev.Service,
+        ModelsDev.Service.of({
+          get: () =>
+            Deferred.succeed(modelsRequested, undefined).pipe(
+              Effect.andThen(Deferred.await(modelsReady)),
+              Effect.as({}),
+            ),
+          refresh: () => Effect.void,
+        }),
+      )
+      const layer = AppNodeBuilder.build(LocationServiceMap.node, [[ModelsDev.node, modelsDev]])
+      const location = Location.Ref.make({
+        directory: AbsolutePath.make(dir.path),
+        workspaceID: WorkspaceV2.ID.make("wrk_location_readiness"),
+      })
+      const acquisition = yield* Deferred.succeed(locationAvailable, undefined).pipe(
+        Effect.provide(LocationServiceMap.Service.get(location)),
+        Effect.provide(layer),
+        Effect.forkChild,
+      )
+
+      yield* Deferred.await(modelsRequested)
+      const availableBeforeModels = Option.isSome(yield* Deferred.poll(locationAvailable))
+      yield* Deferred.succeed(modelsReady, undefined)
+      yield* Fiber.join(acquisition)
+
+      expect(availableBeforeModels).toBe(false)
+    })
+
+    await Effect.runPromise(Effect.scoped(effect))
+  })
+
   it.live("reuses cached services for constructed and decoded location refs", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
