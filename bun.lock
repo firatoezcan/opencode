@@ -332,6 +332,7 @@
         "@opentelemetry/sdk-trace-base": "2.6.1",
         "@parcel/watcher": "2.5.1",
         "@silvia-odwyer/photon-node": "0.3.4",
+        "ai": "catalog:",
         "ai-gateway-provider": "3.2.0",
         "bun-pty": "0.4.8",
         "cross-spawn": "catalog:",
@@ -542,6 +543,7 @@
       "name": "@opencode-ai/llm",
       "version": "1.18.22",
       "dependencies": {
+        "@ai-sdk/provider": "3.0.8",
         "@opencode-ai/schema": "workspace:*",
         "@smithy/eventstream-codec": "4.2.14",
         "@smithy/util-utf8": "4.2.2",

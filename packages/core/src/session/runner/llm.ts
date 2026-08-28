@@ -3,13 +3,18 @@ import {
   LLMClient,
   LLMError,
   LLMEvent,
+  GenerationOptions,
+  HttpOptions,
   Message,
   SystemPart,
+  ToolChoice,
   isContextOverflowFailure,
+  type Model,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
 import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
+import { AISDK } from "../../aisdk"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
 import { EventV2 } from "../../event"
@@ -39,6 +44,13 @@ import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
+import { streamAISDK, type AISDKRequest } from "./aisdk-runtime"
+
+type Runtime = {
+  readonly model: { readonly id: string; readonly provider: string }
+  readonly limits: { readonly context?: number; readonly output?: number }
+  readonly stream: (request: AISDKRequest) => Stream.Stream<LLMEvent, LLMError>
+}
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -62,7 +74,7 @@ import { llmClient } from "../../effect/app-node-platform"
  *   - [x] Translate every projected V2 Session message variant into canonical
  *     `@opencode-ai/llm` messages.
  *   - [ ] Resolve policy-filtered built-in, MCP, plugin, and structured-output tool definitions.
- *   - [x] Stream exactly one `llm.stream(request)` provider turn.
+ *   - [x] Stream exactly one provider turn through the selected runtime.
  *   - [x] Persist assistant text and usage events incrementally as they arrive.
  *   - [ ] Persist snapshots, patches, and retry notices incrementally as they arrive.
  *   - [x] Persist reasoning, provider errors, and tool-call events incrementally as they arrive.
@@ -83,7 +95,7 @@ import { llmClient } from "../../effect/app-node-platform"
  *   - [ ] Coalesce streamed deltas and add covering projected-history indexes.
  *   - [ ] Update title, summaries, compaction state, and cleanup in bounded background work.
  *
- * Use `llm.stream(request)` for each provider turn. Keep tool execution and continuation here.
+ * Keep runtime selection, shared event delivery, tool execution, and continuation here.
  * The current slice loads V2 history, translates it, resolves a model through a core service, and persists one
  * provider turn. Registry definitions are advertised, local tool calls are settled durably, and an
  * explicit loop starts the next provider turn after local settlement. Configured agent step limits bound the loop.
@@ -94,6 +106,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const events = yield* EventV2.Service
     const llm = yield* LLMClient.Service
+    const aisdk = yield* AISDK.Service
     const agents = yield* AgentV2.Service
     const tools = yield* ToolRegistry.Service
     const models = yield* SessionRunnerModel.Service
@@ -106,7 +119,25 @@ const layer = Layer.effect(
     const config = yield* Config.Service
     const snapshots = yield* Snapshot.Service
     const db = (yield* Database.Service).db
-    const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
+    const compaction = SessionCompaction.make({ events, config: yield* config.entries() })
+    const nativeRuntime = (model: Model): Runtime => ({
+      model: { id: model.id, provider: model.provider },
+      limits: model.route.defaults.limits ?? {},
+      stream: (request) => llm.stream(LLM.request({ ...request, model })),
+    })
+    const resolveRuntime = Effect.fn("SessionRunner.resolveRuntime")(function* (resolved: SessionRunnerModel.Resolved) {
+      if (resolved.type === "native") return nativeRuntime(resolved.model)
+      const model = resolved.model
+      const native = yield* SessionRunnerModel.fromCatalogModel(model).pipe(Effect.result)
+      if (native._tag === "Success") return nativeRuntime(native.success)
+      if (model.api.type !== "aisdk") return yield* native.failure
+      const language = yield* aisdk.language(model)
+      return {
+        model: { id: model.id, provider: model.providerID },
+        limits: model.limit,
+        stream: (request) => streamAISDK(model, language, request),
+      } satisfies Runtime
+    })
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(`Session not found: ${sessionID}`)
@@ -196,38 +227,56 @@ const layer = Layer.effect(
       }
       const system =
         initialized ?? (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id))
-      const model = yield* models.resolve(session)
+      const runtime = yield* models.resolve(session).pipe(Effect.flatMap(resolveRuntime))
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
-      const request = LLM.request({
-        model,
-        http: {
+      const request: AISDKRequest = {
+        http: HttpOptions.make({
           headers: {
             "x-session-affinity": session.id,
             "X-Session-Id": session.id,
             ...(session.parentID ? { "x-parent-session-id": session.parentID } : {}),
           },
-        },
+        }),
         providerOptions: { openai: { promptCacheKey } },
         system: [agent.info?.system, system.baseline]
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
-        messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : [])],
+        messages: [
+          ...toLLMMessages(context, runtime.model),
+          ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []),
+        ],
         tools: toolMaterialization?.definitions ?? [],
-        toolChoice: isLastStep ? "none" : undefined,
-      })
-      if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
+        toolChoice: isLastStep ? ToolChoice.make("none") : undefined,
+      }
+      const compactionInput = {
+        sessionID: session.id,
+        entries,
+        limits: runtime.limits,
+        request,
+        summarize: (prompt: string, maxTokens: number) =>
+          runtime.stream({
+            ...request,
+            system: [],
+            messages: [Message.user(prompt)],
+            tools: [],
+            toolChoice: undefined,
+            generation: GenerationOptions.make({ maxTokens }),
+            providerOptions: undefined,
+          }),
+      }
+      if (yield* compaction.compactIfNeeded(compactionInput))
         return yield* Effect.die(continueAfterCompaction(currentStep))
       const startSnapshot = yield* snapshots.capture()
       const publisher = createLLMEventPublisher(events, {
         sessionID: session.id,
         agent: agent.id,
         model: {
-          id: ModelV2.ID.make(model.id),
-          providerID: ProviderV2.ID.make(model.provider),
+          id: ModelV2.ID.make(runtime.model.id),
+          providerID: ProviderV2.ID.make(runtime.model.provider),
           ...(session.model?.variant === undefined ? {} : { variant: session.model.variant }),
         },
         snapshot: startSnapshot,
@@ -236,7 +285,7 @@ const layer = Layer.effect(
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
-      const providerStream = llm.stream(request).pipe(
+      const providerStream = runtime.stream(request).pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             if (overflowFailure || publisher.hasProviderError()) return
@@ -290,7 +339,7 @@ const layer = Layer.effect(
             recoverOverflow &&
             !publisher.hasAssistantStarted() &&
             isContextOverflowFailure(overflowFailure ?? failure) &&
-            (yield* restore(recoverOverflow({ sessionID: session.id, entries, model, request })))
+            (yield* restore(recoverOverflow(compactionInput)))
           )
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
           if (overflowFailure) yield* publish(overflowFailure)
@@ -463,6 +512,7 @@ export const node = makeLocationNode({
   deps: [
     EventV2.node,
     llmClient,
+    AISDK.node,
     AgentV2.node,
     ToolRegistry.node,
     SessionRunnerModel.node,

@@ -1,6 +1,6 @@
 export * as SessionCompaction from "./compaction"
 
-import { LLM, LLMError, LLMEvent, Message, type LLMRequest, type Model } from "@opencode-ai/llm"
+import { LLMError, LLMEvent, type LLMRequest } from "@opencode-ai/llm"
 import { DateTime, Effect, Stream } from "effect"
 import type { Config } from "../config"
 import type { EventV2 } from "../event"
@@ -67,17 +67,15 @@ type Settings = {
 
 type Dependencies = {
   readonly events: EventV2.Interface
-  readonly llm: {
-    readonly stream: (request: LLMRequest) => Stream.Stream<LLMEvent, LLMError>
-  }
   readonly config: readonly Config.Entry[]
 }
 
 type Input = {
   readonly sessionID: SessionSchema.ID
   readonly entries: readonly Entry[]
-  readonly model: Model
-  readonly request: LLMRequest
+  readonly limits: { readonly context?: number; readonly output?: number }
+  readonly request: Pick<LLMRequest, "system" | "messages" | "tools" | "generation">
+  readonly summarize: (prompt: string, maxTokens: number) => Stream.Stream<LLMEvent, LLMError>
 }
 
 const estimate = (value: unknown) => Token.estimate(JSON.stringify(value))
@@ -176,9 +174,9 @@ export const buildPrompt = (input: { readonly previousSummary?: string; readonly
 export const make = (dependencies: Dependencies) => {
   const config = settings(dependencies.config)
   const compactAfterOverflow = Effect.fn("SessionCompaction.compactAfterOverflow")(function* (input: Input) {
-    const context = input.model.route.defaults.limits?.context
+    const context = input.limits.context
     if (context === undefined || context <= 0) return false
-    const output = input.request.generation?.maxTokens ?? input.model.route.defaults.limits?.output ?? 0
+    const output = input.request.generation?.maxTokens ?? input.limits.output ?? 0
     const selected = select(input.entries, config.tokens)
     const previousSummary = input.entries.find((entry) => entry.message.type === "compaction")?.message
     if (!selected || (selected.head.length === 0 && previousSummary?.type !== "compaction")) return false
@@ -198,25 +196,15 @@ export const make = (dependencies: Dependencies) => {
 
     const chunks: string[] = []
     let failed = false
-    const summarized = yield* dependencies.llm
-      .stream(
-        LLM.request({
-          model: input.model,
-          http: input.request.http,
-          messages: [Message.user(summaryPrompt)],
-          tools: [],
-          generation: { maxTokens: summaryOutput },
-        }),
-      )
-      .pipe(
-        Stream.runForEach((event) => {
-          if (LLMEvent.is.providerError(event)) failed = true
-          if (LLMEvent.is.textDelta(event)) chunks.push(event.text)
-          return Effect.void
-        }),
-        Effect.as(true),
-        Effect.catchTag("LLM.Error", () => Effect.succeed(false)),
-      )
+    const summarized = yield* input.summarize(summaryPrompt, summaryOutput).pipe(
+      Stream.runForEach((event) => {
+        if (LLMEvent.is.providerError(event)) failed = true
+        if (LLMEvent.is.textDelta(event)) chunks.push(event.text)
+        return Effect.void
+      }),
+      Effect.as(true),
+      Effect.catchTag("LLM.Error", () => Effect.succeed(false)),
+    )
     const summary = chunks.join("")
     if (!summarized || failed || !summary.trim()) return false
     yield* dependencies.events.publish(SessionEvent.Compaction.Ended, {
@@ -231,9 +219,9 @@ export const make = (dependencies: Dependencies) => {
   })
   const compactIfNeeded = Effect.fn("SessionCompaction.compactIfNeeded")(function* (input: Input) {
     if (!config.auto) return false
-    const context = input.model.route.defaults.limits?.context
+    const context = input.limits.context
     if (context === undefined || context <= 0) return false
-    const output = input.request.generation?.maxTokens ?? input.model.route.defaults.limits?.output ?? 0
+    const output = input.request.generation?.maxTokens ?? input.limits.output ?? 0
     if (
       estimate({ system: input.request.system, messages: input.request.messages, tools: input.request.tools }) <=
       context - Math.max(output, config.buffer)

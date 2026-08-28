@@ -71,18 +71,24 @@ export type Error =
   | UnsupportedApiError
   | Integration.AuthorizationError
 
+export type Resolved =
+  | { readonly type: "catalog"; readonly model: ModelV2.Info }
+  | { readonly type: "native"; readonly model: Model }
+
 export interface Interface {
-  readonly resolve: (session: SessionSchema.Info) => Effect.Effect<Model, Error>
+  readonly resolve: (session: SessionSchema.Info) => Effect.Effect<Resolved, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionRunnerModel") {}
 
-/** Test or embedding seam for supplying a model resolver directly. */
-export const layerWith = (resolve: Interface["resolve"]) => Layer.succeed(Service, Service.of({ resolve }))
+/** Test or embedding seam for supplying a native model resolver directly. */
+export const layerWith = (resolve: (session: SessionSchema.Info) => Effect.Effect<Model, Error>) =>
+  Layer.succeed(
+    Service,
+    Service.of({ resolve: (session) => resolve(session).pipe(Effect.map((model) => ({ type: "native", model }))) }),
+  )
 
-const apiKey = (model: ModelV2.Info, credential?: Credential.Value) => {
-  if (credential?.type === "key") return Auth.value(credential.key)
-  if (credential?.type === "oauth") return Auth.value(credential.access)
+const apiKey = (model: ModelV2.Info) => {
   const value = model.request.body.apiKey ?? model.api.settings?.apiKey
   if (typeof value === "string") return Auth.value(value)
 }
@@ -125,6 +131,14 @@ const withVariant = (
   )
 }
 
+const withCredential = (model: ModelV2.Info, credential?: Credential.Value) => {
+  if (!credential) return model
+  return produce(model, (draft) => {
+    if (credential.type === "key" && credential.metadata) Object.assign(draft.request.body, credential.metadata)
+    draft.request.body.apiKey = credential.type === "key" ? credential.key : credential.access
+  })
+}
+
 const apiName = (model: ModelV2.Info) =>
   model.api.type === "aisdk" ? `${model.api.type}:${model.api.package}` : model.api.type
 
@@ -132,13 +146,8 @@ export const fromCatalogModel = (
   model: ModelV2.Info,
   credential?: Credential.Value,
 ): Effect.Effect<Model, UnsupportedApiError> => {
-  const resolved =
-    credential?.type !== "key" || credential.metadata === undefined
-      ? model
-      : produce(model, (draft) => {
-          Object.assign(draft.request.body, credential.metadata)
-        })
-  const key = apiKey(resolved, credential)
+  const resolved = withCredential(model, credential)
+  const key = apiKey(resolved)
   if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/openai") {
     return Effect.succeed(
       withDefaults(resolved, OpenAIResponses.route)
@@ -172,11 +181,7 @@ export const fromCatalogModel = (
 export const resolve = (session: SessionSchema.Info, model: ModelV2.Info, credential?: Credential.Value) =>
   withVariant(model, session.model?.variant).pipe(Effect.flatMap((model) => fromCatalogModel(model, credential)))
 
-export const supported = (model: ModelV2.Info) =>
-  model.api.type === "aisdk" &&
-  (model.api.package === "@ai-sdk/openai" ||
-    model.api.package === "@ai-sdk/anthropic" ||
-    (model.api.package === "@ai-sdk/openai-compatible" && model.api.url !== undefined))
+const executable = (model: ModelV2.Info) => model.api.type === "aisdk"
 
 /** Resolves models from the catalog belonging to the current Location runtime. */
 export const locationLayer = Layer.effect(
@@ -192,9 +197,9 @@ export const locationLayer = Layer.effect(
           ? (yield* catalog.model.available()).find(
               (model) => model.providerID === session.model?.providerID && model.id === session.model.id,
             )
-          : defaultModel && supported(defaultModel)
+          : defaultModel && executable(defaultModel)
             ? defaultModel
-            : (yield* catalog.model.available()).find(supported)
+            : (yield* catalog.model.available()).find(executable)
         if (!selected && session.model)
           return yield* new ModelUnavailableError({
             providerID: session.model.providerID,
@@ -205,11 +210,9 @@ export const locationLayer = Layer.effect(
         const connection = yield* integrations.connection.active(
           provider?.integrationID ?? Integration.ID.make(selected.providerID),
         )
-        return yield* resolve(
-          session,
-          selected,
-          connection ? yield* integrations.connection.resolve(connection) : undefined,
-        )
+        const credential = connection ? yield* integrations.connection.resolve(connection) : undefined
+        const model = yield* withVariant(selected, session.model?.variant)
+        return { type: "catalog", model: withCredential(model, credential) }
       }),
     })
   }),

@@ -21,12 +21,15 @@ Per-type constructors live on the type, not as top-level re-exports. Use `Messag
 
 This package is an Effect Schema-first LLM core. The Schema classes in `src/schema/` are the canonical runtime data model. Convenience functions in `src/llm.ts` are thin constructors that return those same Schema class instances; they should improve callsites without creating a second model.
 
-Primary in-repo integration point:
+Primary in-repo integration points:
 
-- `packages/opencode/src/session/llm.ts` is the session-owned orchestration layer that decides whether a request uses AI SDK or this package's native route runtime.
+- `packages/core/src/session/runner/llm.ts` owns V2 Session runtime selection. Native-supported catalog models use `LLMClient`; other `aisdk` catalog models use the generic AI SDK runtime.
+- `packages/core/src/aisdk-adapter.ts` owns shared AI SDK stream-part to `LLMEvent` conversion.
+- `packages/core/src/session/runner/aisdk-runtime.ts` lowers a canonical V2 request into `streamText(...)` and delegates AI SDK errors to this package's provider-error policy.
+- `packages/opencode/src/session/llm.ts` owns legacy Session orchestration and runtime selection.
 - `packages/opencode/src/session/llm/native-request.ts` is the lowering adapter from opencode's session/AI SDK-shaped data into this package's `LLMRequest` model.
 - `packages/opencode/src/session/llm/native-runtime.ts` is the execution adapter that calls raw `LLMClient.stream(request)` and bridges one provider turn of opencode tool calls through this package's typed dispatcher.
-- `packages/opencode/src/session/llm/ai-sdk.ts` keeps the default AI SDK path compatible by converting AI SDK stream parts into this package's shared `LLMEvent`s.
+- `packages/opencode/src/session/llm/ai-sdk.ts` is a thin legacy error-policy wrapper around the core AI SDK adapter.
 
 Keep this package independent of session concerns. Session auth, permissions, plugins, telemetry headers, and runtime selection belong in `packages/opencode/src/session/llm.ts` and its local adapters.
 
