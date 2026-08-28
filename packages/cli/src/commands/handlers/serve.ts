@@ -2,6 +2,7 @@ import { NodeHttpServer } from "@effect/platform-node"
 import { Credential } from "@opencode-ai/core/credential"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
 import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { Context, Layer, Option } from "effect"
 import * as Effect from "effect/Effect"
@@ -41,9 +42,10 @@ function bind(hostname: string, port: number, password: string) {
     HttpRouter.serve(createRoutes(password), { disableListenLog: true, disableLogger: true }).pipe(
       Layer.provideMerge(NodeHttpServer.layer(() => createServer(), { port, host: hostname })),
       Layer.provide(
-        AppNodeBuilder.build(LayerNode.group([Credential.node, PermissionSaved.node]), [
-          [Credential.node, Credential.protectedNode],
-        ]),
+        AppNodeBuilder.build(
+          LayerNode.group([Credential.node, LocationServiceMap.node, PermissionSaved.node]),
+          [[Credential.node, Credential.protectedNode]],
+        ),
       ),
     ),
   ).pipe(Effect.map((context) => Context.get(context, HttpServer.HttpServer).address))
