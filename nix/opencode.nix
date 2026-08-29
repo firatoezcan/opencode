@@ -3,8 +3,10 @@
   stdenvNoCC,
   callPackage,
   bun,
+  fetchurl,
   nodejs,
   sysctl,
+  unzip,
   makeBinaryWrapper,
   models-dev,
   ripgrep,
@@ -13,6 +15,12 @@
   writableTmpDirAsHomeHook,
   node_modules ? callPackage ./node-modules.nix { },
 }:
+let
+  bunBaseline = fetchurl {
+    url = "https://github.com/oven-sh/bun/releases/download/bun-v${bun.version}/bun-linux-x64-baseline.zip";
+    hash = "sha256-nYokKSpwaAkCBdqsCloiP19pc29Sh+N7+I07QDHtx1A=";
+  };
+in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "opencode";
   inherit (node_modules) version src;
@@ -25,7 +33,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     makeBinaryWrapper
     models-dev
     writableTmpDirAsHomeHook
-  ];
+  ] ++ lib.optional stdenvNoCC.hostPlatform.isx86_64 unzip;
 
   postPatch = ''
     # NOTE: Relax Bun version check to be a warning instead of an error
@@ -53,6 +61,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     runHook preBuild
 
     cd ./packages/opencode
+    ${lib.optionalString stdenvNoCC.hostPlatform.isx86_64 ''
+      unzip -p ${bunBaseline} bun-linux-x64-baseline/bun > bun-linux-x64-baseline-v${bun.version}
+      chmod +x bun-linux-x64-baseline-v${bun.version}
+    ''}
     bun --bun ./script/build.ts --single${lib.optionalString stdenvNoCC.hostPlatform.isx86_64 " --baseline"} --skip-install
     bun --bun ./script/schema.ts schema.json
 
