@@ -6,6 +6,7 @@
   fetchurl,
   nodejs,
   sysctl,
+  unzip,
   makeBinaryWrapper,
   models-dev,
   ripgrep,
@@ -15,17 +16,10 @@
   node_modules ? callPackage ./node-modules.nix { },
 }:
 let
-  buildBun =
-    if stdenvNoCC.hostPlatform.isLinux && stdenvNoCC.hostPlatform.isx86_64 then
-      bun.overrideAttrs (_: {
-        src = fetchurl {
-          url = "https://github.com/oven-sh/bun/releases/download/bun-v${bun.version}/bun-linux-x64-baseline.zip";
-          hash = "sha256-nYokKSpwaAkCBdqsCloiP19pc29Sh+N7+I07QDHtx1A=";
-        };
-        sourceRoot = "bun-linux-x64-baseline";
-      })
-    else
-      bun;
+  bunBaseline = fetchurl {
+    url = "https://github.com/oven-sh/bun/releases/download/bun-v${bun.version}/bun-linux-x64-baseline.zip";
+    hash = "sha256-nYokKSpwaAkCBdqsCloiP19pc29Sh+N7+I07QDHtx1A=";
+  };
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "opencode";
@@ -33,13 +27,13 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   inherit node_modules;
 
   nativeBuildInputs = [
-    buildBun
+    bun
     nodejs # for patchShebangs node_modules
     installShellFiles
     makeBinaryWrapper
     models-dev
     writableTmpDirAsHomeHook
-  ];
+  ] ++ lib.optional stdenvNoCC.hostPlatform.isx86_64 unzip;
 
   postPatch = ''
     # NOTE: Relax Bun version check to be a warning instead of an error
@@ -67,6 +61,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     runHook preBuild
 
     cd ./packages/opencode
+    ${lib.optionalString stdenvNoCC.hostPlatform.isx86_64 ''
+      unzip -p ${bunBaseline} bun-linux-x64-baseline/bun > bun-linux-x64-baseline-v${bun.version}
+      chmod +x bun-linux-x64-baseline-v${bun.version}
+    ''}
     bun --bun ./script/build.ts --single${lib.optionalString stdenvNoCC.hostPlatform.isx86_64 " --baseline"} --skip-install
     bun --bun ./script/schema.ts schema.json
 
