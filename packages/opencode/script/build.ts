@@ -175,6 +175,9 @@ for (const item of targets) {
       autoloadTsconfig: true,
       autoloadPackageJson: true,
       target: name.replace(pkg.name, "bun") as any,
+      ...(process.env.OPENCODE_BUN_EXECUTABLE_PATH
+        ? { executablePath: process.env.OPENCODE_BUN_EXECUTABLE_PATH }
+        : {}),
       outfile: `dist/${name}/bin/opencode`,
       execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
