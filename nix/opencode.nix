@@ -2,10 +2,12 @@
   lib,
   stdenvNoCC,
   callPackage,
+  autoPatchelfHook,
   bun,
   fetchurl,
   nodejs,
   sysctl,
+  unzip,
   makeBinaryWrapper,
   models-dev,
   ripgrep,
@@ -15,30 +17,29 @@
   node_modules ? callPackage ./node-modules.nix { },
 }:
 let
-  buildBun =
-    if stdenvNoCC.hostPlatform.isLinux && stdenvNoCC.hostPlatform.isx86_64 then
-      bun.overrideAttrs (_: {
-        src = fetchurl {
-          url = "https://github.com/oven-sh/bun/releases/download/bun-v${bun.version}/bun-linux-x64-baseline.zip";
-          hash = "sha256-nYokKSpwaAkCBdqsCloiP19pc29Sh+N7+I07QDHtx1A=";
-        };
-        sourceRoot = "bun-linux-x64-baseline";
-      })
-    else
-      bun;
+  isLinuxX64 = stdenvNoCC.hostPlatform.isLinux && stdenvNoCC.hostPlatform.isx86_64;
+  bunBaseline = fetchurl {
+    url = "https://github.com/oven-sh/bun/releases/download/bun-v${bun.version}/bun-linux-x64-baseline.zip";
+    hash = "sha256-nYokKSpwaAkCBdqsCloiP19pc29Sh+N7+I07QDHtx1A=";
+  };
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "opencode";
   inherit (node_modules) version src;
   inherit node_modules;
+  dontStrip = isLinuxX64;
 
   nativeBuildInputs = [
-    buildBun
+    bun
     nodejs # for patchShebangs node_modules
     installShellFiles
     makeBinaryWrapper
     models-dev
     writableTmpDirAsHomeHook
+  ]
+  ++ lib.optionals isLinuxX64 [
+    autoPatchelfHook
+    unzip
   ];
 
   postPatch = ''
@@ -67,6 +68,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     runHook preBuild
 
     cd ./packages/opencode
+    ${lib.optionalString isLinuxX64 ''
+      unzip -p ${bunBaseline} bun-linux-x64-baseline/bun > bun-linux-x64-baseline-v${bun.version}
+      chmod +x bun-linux-x64-baseline-v${bun.version}
+    ''}
     bun --bun ./script/build.ts --single${lib.optionalString stdenvNoCC.hostPlatform.isx86_64 " --baseline"} --skip-install
     bun --bun ./script/schema.ts schema.json
 
@@ -78,6 +83,9 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
     install -Dm755 dist/opencode-*/bin/opencode $out/bin/opencode
     install -Dm644 schema.json $out/share/opencode/schema.json
+    ${lib.optionalString isLinuxX64 ''
+      autoPatchelf $out/bin/opencode
+    ''}
 
     wrapProgram $out/bin/opencode \
       --prefix PATH : ${
